@@ -1,8 +1,8 @@
 -- Pure timer-learning helpers for Warn.
 --
 -- This module intentionally does not activate alerts or timers.  It only turns a
--- sequence of actor + ability observations into a confidence-scored suggestion.
--- warn.lua owns persistence, user approval, and presentation.
+-- sequence of actor + ability observations into a confidence-scored readiness suggestion.
+-- It never claims that a learned TP move follows a hard countdown.
 
 local learner = {};
 
@@ -82,6 +82,7 @@ function learner.record(entries, actor, ability, eventType, now, options)
             uses = 0,
             intervals = {},
             status = 'observing',
+            prediction = 'readiness',
             created_at = now,
         };
         entries[key] = entry;
@@ -89,6 +90,7 @@ function learner.record(entries, actor, ability, eventType, now, options)
 
     if (type(entry.intervals) ~= 'table') then entry.intervals = {}; end
     if (entry.status == nil) then entry.status = 'observing'; end
+    entry.prediction = 'readiness';
 
     if (entry.status == 'ignored') then
         return entry, false, false, 'ignored';

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.0.0
+- Redesigned the GUI around two top-level areas: **Encounters** and **Options**.
+- Added a metadata-driven encounter browser whose categories come from content/group/encounter data rather than Lua filenames.
+- Moved the manual ability list into a collapsed **Custom Watches (Advanced)** section.
+- Populates Custom Watches from Ashita's local monster-ability resources, with `data/abilities.txt` retained only as a compatibility fallback.
+- Added remembered responsibility profiles for each character and main job/subjob combination.
+- Separates party responsibility from mechanical capability: action prompts require both an enabled responsibility and a currently usable action.
+- Critical factual mechanic warnings remain visible even when a role-specific action prompt is suppressed.
+- Added passive incoming action-packet `0x028` recognition for monster-skill and spell starts, without packet modification or combat automation.
+- Unknown abilities feed local Learning evidence but never create automatic alerts; explicit Custom Watches remain the only manual exception.
+- Reframed learned TP repetition as uncertain readiness windows using observed minimum/maximum intervals rather than countdown timers.
+- Added optional rule metadata for prediction model, target shape, audience, group, and counter responsibility.
+- Added offline policy and packet-parser tests.
+
 ## 1.9.0
 - Added a GUI-first **Database** tab for checking and installing community encounter-data updates.
 - Added once-per-day automatic update checks when the Warn GUI opens; installation always requires explicit approval.

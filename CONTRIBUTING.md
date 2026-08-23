@@ -23,6 +23,9 @@ Warn is an Ashita v4 encounter-warning addon created by **Sigman**. Contribution
     ability='Dangerous Gaze',
     message='TURN AROUND!\nGAZE PETRIFY',
     severity='critical',
+    prediction='reactive',           -- reactive / readiness / scripted
+    target_shape='gaze',             -- self / single / cone / radial / party / gaze / ground
+    audience={ 'everyone' },
     sound='alarm.wav',
     verified=true,
     source='https://example.com/source',
@@ -32,10 +35,12 @@ Warn is an Ashita v4 encounter-warning addon created by **Sigman**. Contribution
 ## Job-specific counter example
 
 ```lua
-counter={ type='spell', name='Stun', label='STUN IT!' }
+counter={ type='spell', name='Stun', label='STUN IT!', responsibility='interrupt' }
 ```
 
-Only use a counter when the encounter mechanic supports it. Warn's capability engine decides whether to show the suggestion to the current player.
+Only use a counter when the encounter mechanic supports it. Warn shows the suggestion only when
+the associated responsibility is enabled and its capability engine confirms the action is usable.
+Keep the factual mechanic in `message`; keep the assigned call to action in the counter label.
 
 ## Testing
 
@@ -78,13 +83,13 @@ Use:
 
 to test changes without editing the encounter database.
 
-## Learned timer observations
+## Learned readiness observations
 
-Warn's Learning tab records local timing evidence, not verified encounter truth. A learned
+Warn's Learning section records local timing evidence, not verified encounter truth. A learned
 candidate should only be promoted into the curated rule database after confirming that the
 interval is repeatable and understanding any phase, HP, difficulty, or random-usage conditions.
 
-When proposing a learned timer, include the actor, ability, observed intervals, sample count,
+When proposing a learned observation, include the actor, ability, observed intervals, sample count,
 content context, and an external verification source when one exists. Do not convert a local
 suggestion directly into a verified rule solely because its confidence score is high.
 

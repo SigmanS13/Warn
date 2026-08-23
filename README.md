@@ -23,11 +23,13 @@ warn/
   CHANGELOG.md
   CONTRIBUTING.md
   data/
+    action_packet.lua
     abilities.txt
     community.json
     community.lua
     debuffs.lua
     json.lua
+    mechanics.lua
     sha256.lua
     timer_learning.lua
     rules.lua
@@ -52,15 +54,10 @@ Load or reload with:
 /addon reload warn
 ```
 
-The GUI is organized around seven simple concepts:
+The GUI has two top-level areas:
 
-- **Abilities** — manual ability watch list
-- **Encounters** — automatic boss/encounter mechanics
-- **Debuffs** — global crowd-control and enfeeble state
-- **Learning** — locally observed repeat timers and their review queue
-- **Database** — safe community-data updates, status and rollback
-- **Appearance** — warning overlay presentation
-- **Sound** — global/custom WAV behavior
+- **Encounters** — a metadata-driven browser for verified mechanics, plus a collapsed **Custom Watches** fallback
+- **Options** — Responsibilities, Learning, Database, Debuffs, Alerts, Appearance, and Sound
 
 The default configuration is intended to work without setup; advanced customization is optional.
 
@@ -91,7 +88,7 @@ The default configuration is intended to work without setup; advanced customizat
 ## Custom sounds
 
 Drop any standard `.wav` file into `warn\sounds\` and click **Refresh Sounds** (or run
-`/warn sounds`). The Sound tab controls the global/manual warning sound.
+`/warn sounds`). **Options → Sound** controls the global/manual warning sound.
 
 ## Per-encounter / per-alert sounds
 
@@ -121,8 +118,28 @@ only appended when Warn confirms that the current character knows the spell, the
 main/sub job can cast it at its level, there is enough MP, and the spell is off recast. For
 Blue Magic, Warn additionally verifies that the spell is currently set before recommending it.
 
+Mechanical capability is not the same as a party assignment. **Options → Responsibilities**
+stores a separate background profile for each character and main job/subjob combination. A
+counter instruction appears only when its responsibility is enabled and Ashita confirms the
+action is currently available. Critical factual mechanic warnings remain visible regardless
+of responsibility settings.
+
 Additional capability types (job abilities, items, songs, etc.) should be added only after
 their Ashita v4 availability checks are verified.
+
+## v2.0 encounter intelligence and reactive recognition
+
+Warn classifies mechanics along independent axes: prediction model, severity, target shape,
+and audience. Existing rules safely default to **Reactive**, **Shape Unspecified**, and
+**Everyone** until reviewed metadata is added.
+
+Incoming action packet `0x028` is observed passively for monster-skill and spell-start
+recognition. Warn never modifies, blocks, injects, or responds to a packet with an automated
+player action. Verified rules may alert immediately; unknown abilities only feed local Learning
+evidence unless the player explicitly enables a Custom Watch.
+
+The Custom Watches catalog is populated from Ashita's local monster-ability resources. The
+packaged `data/abilities.txt` list is retained only as an offline compatibility fallback.
 
 
 
@@ -250,7 +267,7 @@ Test with:
 
 Warn can now learn repeated encounter timing while you play. It observes hostile
 `actor + ability` pairs, suppresses duplicate ready/use lines, and compares the recent
-intervals. After three consistent uses, a candidate appears in `/warn` → **Learning**.
+intervals. After three consistent uses, a candidate appears in **Options → Learning**.
 
 Learning follows a review-first safety model:
 
@@ -259,21 +276,20 @@ Observe repeated action
         ↓
 Confidence-scored suggestion
         ↓
-Approve / Keep Observing / Ignore
+Accept Readiness Window / Keep Observing / Ignore
         ↓
-Approved personal timer only
+Uncertain personal readiness window only
 ```
 
-Unreviewed observations never become live timers. Approved personal timers begin counting
-on the next observed use; if the estimate passes without another observed use, the display
-becomes uncertain instead of pretending the prediction is authoritative.
+Unreviewed observations never create alerts. Accepted observations display the observed
+earliest/latest readiness range after the next use; they are never presented as hard countdowns.
 
 Learned evidence is stored locally in `warn_learning` settings, separately from the curated
 rule database. Warn does not upload or submit observations automatically.
 
 ## v1.9 community database updates
 
-Open `/warn` → **Database** to check for reviewed encounter-data updates. Warn checks at most
+Open **Options → Database** to check for reviewed encounter-data updates. Warn checks at most
 once per day when its GUI opens by default, but it never installs an update without approval.
 
 The update path is data-only:

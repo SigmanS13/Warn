@@ -6,6 +6,15 @@ local allowedEvents = { readies = true, uses = true, starts_casting = true, cast
 local allowedSeverities = { important = true, danger = true, critical = true };
 local allowedStateTypes = { entity_present = true, entity_movement = true, debuff_maintenance = true };
 local allowedCounterTypes = { spell = true, blu_spell = true };
+local allowedResponsibilities = {
+    primary_healer = true, tank = true, interrupt = true, cleanse = true,
+    crowd_control = true, support = true, damage = true,
+};
+local allowedPredictions = { reactive = true, readiness = true, scripted = true };
+local allowedTargetShapes = {
+    unspecified = true, self = true, single = true, cone = true, radial = true,
+    party = true, gaze = true, ground = true,
+};
 local allowedDatabasePrefix = 'https://raw.githubusercontent.com/SigmanS13/Warn/';
 
 local function fail(message)
@@ -93,7 +102,12 @@ local function validate_counter(value, field)
     if (name == nil) then return fail(err); end
     local label; label, err = string_field(value.label, field .. '.label', false, 160);
     if (label == nil and err ~= nil) then return fail(err); end
-    return { type = counterType, name = name, label = label };
+    local responsibility; responsibility, err = string_field(value.responsibility, field .. '.responsibility', false, 32);
+    if (responsibility == nil and err ~= nil) then return fail(err); end
+    if (responsibility ~= nil and not allowedResponsibilities[responsibility]) then
+        return fail(field .. '.responsibility is unsupported');
+    end
+    return { type = counterType, name = name, label = label, responsibility = responsibility };
 end
 
 local function validate_counters(value, field)
@@ -114,6 +128,7 @@ local function common_rule_fields(source, prefix)
     result.id, err = validate_id(source.id, prefix .. '.id'); if (result.id == nil) then return fail(err); end
     result.content, err = string_field(source.content, prefix .. '.content', true, 128); if (result.content == nil) then return fail(err); end
     result.encounter, err = string_field(source.encounter, prefix .. '.encounter', true, 160); if (result.encounter == nil) then return fail(err); end
+    result.group, err = string_field(source.group, prefix .. '.group', false, 128); if (result.group == nil and err ~= nil) then return fail(err); end
     result.actor, err = string_field(source.actor, prefix .. '.actor', false, 128); if (result.actor == nil and err ~= nil) then return fail(err); end
     result.message, err = string_field(source.message, prefix .. '.message', true, 512); if (result.message == nil) then return fail(err); end
     result.severity, err = string_field(source.severity, prefix .. '.severity', true, 24); if (result.severity == nil) then return fail(err); end
@@ -126,6 +141,16 @@ local function common_rule_fields(source, prefix)
     result.duration, err = number_field(source.duration, prefix .. '.duration', 0.1, 120, false); if (result.duration == nil and err ~= nil) then return fail(err); end
     result.counter, err = validate_counter(source.counter, prefix .. '.counter'); if (result.counter == nil and err ~= nil) then return fail(err); end
     result.counters, err = validate_counters(source.counters, prefix .. '.counters'); if (result.counters == nil and err ~= nil) then return fail(err); end
+    result.prediction, err = string_field(source.prediction, prefix .. '.prediction', false, 32); if (result.prediction == nil and err ~= nil) then return fail(err); end
+    if (result.prediction ~= nil and not allowedPredictions[result.prediction]) then return fail(prefix .. '.prediction is unsupported'); end
+    result.target_shape, err = string_field(source.target_shape, prefix .. '.target_shape', false, 32); if (result.target_shape == nil and err ~= nil) then return fail(err); end
+    if (result.target_shape ~= nil and not allowedTargetShapes[result.target_shape]) then return fail(prefix .. '.target_shape is unsupported'); end
+    result.audience, err = string_array(source.audience, prefix .. '.audience', 8, 32); if (result.audience == nil and err ~= nil) then return fail(err); end
+    if (result.audience ~= nil) then
+        for _, audience in ipairs(result.audience) do
+            if (audience ~= 'everyone' and not allowedResponsibilities[audience]) then return fail(prefix .. '.audience contains an unsupported value'); end
+        end
+    end
     return result;
 end
 

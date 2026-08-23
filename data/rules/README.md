@@ -32,6 +32,9 @@ Common fields:
     aliases   = { 'Old Name' },       -- optional log/resource aliases
     message   = 'MOVE AWAY!',
     severity  = 'critical',           -- critical / danger / important
+    prediction = 'reactive',          -- reactive / readiness / scripted
+    target_shape = 'radial',          -- self / single / cone / radial / party / gaze / ground
+    audience  = { 'everyone' },       -- or one or more responsibility ids
     sound     = 'alarm.wav',
     verified  = true,
     source    = 'https://...',
@@ -41,7 +44,7 @@ Common fields:
 Capability prompts can use normal magic or set Blue Magic:
 
 ```lua
-counter = { type='spell', name='Stun', label='STUN IT!' }
+counter = { type='spell', name='Stun', label='STUN IT!', responsibility='interrupt' }
 
 counters = {
     { type='spell', name='Silence', label='CAST SILENCE!' },
@@ -49,7 +52,9 @@ counters = {
 }
 ```
 
-Warn only appends a counter label when the current character can actually use it now. Blue Magic counters also require the spell to be currently set.
+Warn only appends a counter label when its responsibility is enabled and the current character
+can actually use it now. Blue Magic counters also require the spell to be currently set.
+Critical factual messages remain visible even when the action label is filtered.
 
 ## State rules
 

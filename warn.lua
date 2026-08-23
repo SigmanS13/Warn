@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '1.9.0';
+addon.version   = '2.0.0';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -78,6 +78,10 @@ local default_settings = T{
         job_counters      = true,
         contextual_sounds = true,
         state_triggers    = true,
+        packet_recognition = true,
+    },
+    responsibilities = T{
+        profiles = T{},
     },
     learning = T{
         enabled              = true,
@@ -203,6 +207,10 @@ warn = T{
     templateBuf = T{ '!!! %s !!!' },
     ruleSearch = T{ '' },
     selectedRuleId = nil,
+    encounterContent = nil,
+    encounterGroup = nil,
+    customWatchesOpen = T{ false },
+    optionsSection = T{ 1 },
 
     debug = false,
 
@@ -242,6 +250,13 @@ warn = T{
         packet_losses = 0,     -- recognized 0x029 status-loss packets
         last_packet_loss = '',
         advanced_open = T{ false },
+    },
+    mechanics = nil,
+    actionPacket = nil,
+    reactive = T{
+        recent = T{},
+        packet_actions = 0,
+        last_packet_action = '',
     },
 
     timerLearning = T{
@@ -369,32 +384,46 @@ end
 
 function load_abilities()
     warn.abilities = T{};
-
-    local f = io.open(addon.path .. '/data/abilities.txt', 'rb');
-    if (f == nil) then
-        print(chat.header(addon.name):append(chat.error('Failed to load data/abilities.txt.')));
-        rebuild_enabled_lookup();
-        return;
+    local seen = {};
+    local saved = {};
+    if (warn.abilitySettings ~= nil and warn.abilitySettings.enabled ~= nil) then
+        for name, enabled in pairs(warn.abilitySettings.enabled) do
+            if (enabled == true) then saved[tostring(name):lower()] = true; end
+        end
     end
 
-    -- The source list contains some duplicate names. Keep the first occurrence only.
-    local seen = {};
-    for line in f:lines() do
-        local name = trim(line);
+    local function add(name)
+        name = trim(tostring(name or ''));
         if (name ~= '') then
             local key = name:lower();
-            if (not seen[key]) then
+            if (key ~= 'unknown' and not seen[key]) then
                 seen[key] = true;
-
-                local isEnabled = false;
-                if (warn.abilitySettings ~= nil and warn.abilitySettings.enabled ~= nil) then
-                    isEnabled = (warn.abilitySettings.enabled[name] == true);
-                end
-                table.insert(warn.abilities, T{ name, isEnabled });
+                table.insert(warn.abilities, T{ name, saved[key] == true });
             end
         end
     end
-    f:close();
+
+    -- Ashita's local resource table is the primary catalog. This avoids maintaining a
+    -- second copy of information the client already exposes and performs no network access.
+    local resources = AshitaCore:GetResourceManager();
+    if (resources ~= nil) then
+        for id = 0, 4095 do
+            local ok, name = pcall(function () return resources:GetString('monsters.abilities', id); end);
+            if (ok and name ~= nil) then add(name); end
+        end
+    end
+
+    -- Retain the packaged list only as a compatibility fallback for Ashita installations
+    -- where the monster-ability string table is unavailable.
+    if (#warn.abilities == 0) then
+        local f = io.open(addon.path .. '/data/abilities.txt', 'rb');
+        if (f ~= nil) then
+            for line in f:lines() do add(line); end
+            f:close();
+        end
+    end
+
+    table.sort(warn.abilities, function (a, b) return tostring(a[1]):lower() < tostring(b[1]):lower(); end);
 
     rebuild_enabled_lookup();
 end
@@ -483,6 +512,7 @@ local function ensure_context_settings()
             job_counters = true,
             contextual_sounds = true,
             state_triggers = true,
+            packet_recognition = true,
         };
         save_settings();
         return;
@@ -492,6 +522,12 @@ local function ensure_context_settings()
     if (warn.settings.context.job_counters == nil) then warn.settings.context.job_counters = true; end
     if (warn.settings.context.contextual_sounds == nil) then warn.settings.context.contextual_sounds = true; end
     if (warn.settings.context.state_triggers == nil) then warn.settings.context.state_triggers = true; end
+    if (warn.settings.context.packet_recognition == nil) then warn.settings.context.packet_recognition = true; end
+end
+
+local function ensure_responsibility_settings()
+    if (warn.settings.responsibilities == nil) then warn.settings.responsibilities = T{}; end
+    if (warn.settings.responsibilities.profiles == nil) then warn.settings.responsibilities.profiles = T{}; end
 end
 
 local function ensure_learning_settings()
@@ -551,6 +587,16 @@ local function load_community_modules()
     warn.community.json = json;
     warn.community.sha256 = sha256;
     warn.community.engine = engine;
+    return true;
+end
+
+local function load_mechanic_modules()
+    local policy, err = load_data_module('mechanics.lua', 'normalize_rule');
+    if (policy == nil) then return false, err; end
+    local packet; packet, err = load_data_module('action_packet.lua', 'parse');
+    if (packet == nil) then return false, err; end
+    warn.mechanics = policy;
+    warn.actionPacket = packet;
     return true;
 end
 
@@ -780,6 +826,11 @@ function load_context_rules()
         warn.rules = warn.community.engine.merge(warn.rules, warn.community.installed);
     end
 
+    if (warn.mechanics ~= nil) then
+        for _, rule in ipairs(warn.rules.ability_rules or {}) do warn.mechanics.normalize_rule(rule); end
+        for _, rule in ipairs(warn.rules.state_rules or {}) do warn.mechanics.normalize_rule(rule); end
+    end
+
     for _, rule in ipairs(warn.rules.state_rules) do
         if (rule.id ~= nil) then
             warn.ruleState[rule.id] = {
@@ -929,6 +980,51 @@ local function get_player_job_text()
     local main = jobAbbr[mainId] or tostring(mainId);
     local sub = jobAbbr[subId] or tostring(subId);
     return string.format('%s%d/%s%d', main, player:GetMainJobLevel(), sub, player:GetSubJobLevel());
+end
+
+local function get_player_profile_identity()
+    local player = AshitaCore:GetMemoryManager():GetPlayer();
+    if (player == nil) then return nil; end
+
+    local name = 'Unknown Character';
+    local party = AshitaCore:GetMemoryManager():GetParty();
+    if (party ~= nil) then
+        local ok, value = pcall(function () return party:GetMemberName(0); end);
+        if (ok and value ~= nil and tostring(value) ~= '') then name = tostring(value); end
+        if (name == 'Unknown Character') then
+            local index = party:GetMemberTargetIndex(0);
+            local entityManager = AshitaCore:GetMemoryManager():GetEntity();
+            local entity = entityManager ~= nil and entityManager:GetRawEntity(index) or nil;
+            if (entity ~= nil and entity.Name ~= nil and tostring(entity.Name) ~= '') then name = tostring(entity.Name); end
+        end
+    end
+    if (name == 'Unknown Character') then return nil; end
+    return name, tonumber(player:GetMainJob()) or 0, tonumber(player:GetSubJob()) or 0;
+end
+
+local function get_current_responsibility_profile(create)
+    ensure_responsibility_settings();
+    if (warn.mechanics == nil) then return nil, nil; end
+    local name, mainJob, subJob = get_player_profile_identity();
+    if (name == nil) then return nil, nil; end
+    local key = warn.mechanics.profile_key(name, mainJob, subJob);
+    local profile = warn.settings.responsibilities.profiles[key];
+    if (profile == nil and create) then
+        local defaults = warn.mechanics.default_profile(mainJob);
+        profile = T{};
+        for responsibility, enabled in pairs(defaults) do profile[responsibility] = enabled; end
+        warn.settings.responsibilities.profiles[key] = profile;
+        save_settings();
+    end
+    return profile, key;
+end
+
+local function counter_is_assigned(counter)
+    if (warn.mechanics == nil) then return true; end
+    local profile = get_current_responsibility_profile(true);
+    if (profile == nil) then return true; end
+    local assigned = warn.mechanics.counter_is_assigned(counter, profile);
+    return assigned == true;
 end
 
 local function find_spell_resource(name)
@@ -1112,10 +1208,10 @@ local function get_available_counter(rule)
     if (candidates == nil) then return nil; end
 
     for _, counter in ipairs(candidates) do
-        if (counter.type == 'spell') then
+        if (counter_is_assigned(counter) and counter.type == 'spell') then
             local ok = can_use_spell_now(counter.name);
             if (ok) then return counter; end
-        elseif (counter.type == 'blu_spell') then
+        elseif (counter_is_assigned(counter) and counter.type == 'blu_spell') then
             local ok = can_use_blu_spell_now(counter.name);
             if (ok) then return counter; end
         end
@@ -1130,7 +1226,9 @@ local function build_context_text(rule, messageOverride)
     if (rule == nil) then return nil, nil; end
 
     local counter = get_available_counter(rule);
-    if (rule.only_if_counter_available and counter == nil) then
+    -- Critical mechanic facts always remain visible.  Responsibility and capability
+    -- filtering only remove the action instruction, never the critical warning itself.
+    if (rule.only_if_counter_available and counter == nil and rule.severity ~= 'critical') then
         return nil, nil;
     end
 
@@ -1211,7 +1309,7 @@ local function entity_position(entity)
 end
 
 local function trigger_context_rule(rule, fallbackName, messageOverride)
-    if (rule == nil or not is_rule_enabled(rule)) then return false; end
+    if (rule == nil or rule.verified ~= true or not is_rule_enabled(rule)) then return false; end
 
     local text = build_context_text(rule, messageOverride);
     if (text == nil) then return false; end
@@ -1308,10 +1406,10 @@ end
 local function get_available_debuff_counter(definition)
     if (definition == nil or definition.counters == nil) then return nil; end
     for _, counter in ipairs(definition.counters) do
-        if (counter.type == 'spell') then
+        if (counter_is_assigned(counter) and counter.type == 'spell') then
             local ok = can_use_spell_now(counter.name);
             if (ok) then return counter; end
-        elseif (counter.type == 'blu_spell') then
+        elseif (counter_is_assigned(counter) and counter.type == 'blu_spell') then
             local ok = can_use_blu_spell_now(counter.name);
             if (ok) then return counter; end
         end
@@ -1557,6 +1655,14 @@ local function get_debuff_time_text(entry, now)
     return '? +' .. format_seconds(-remaining);
 end
 
+local function debuff_instruction_is_assigned(definition)
+    if (definition == nil or definition.counters == nil or #definition.counters == 0) then return true; end
+    for _, counter in ipairs(definition.counters) do
+        if (counter_is_assigned(counter)) then return true; end
+    end
+    return false;
+end
+
 local function queue_debuff_prewarn(definition, entry)
     if (definition == nil or entry == nil) then return; end
     table.insert(warn.debuffs.pending_prewarns, {
@@ -1564,6 +1670,7 @@ local function queue_debuff_prewarn(definition, entry)
         definition = definition,
         name = tostring(entry.name or 'Unknown'),
         remaining = math.max(0, math.floor(((entry.expires_at or os.clock()) - os.clock()) + 0.5)),
+        assigned = debuff_instruction_is_assigned(definition),
     });
     warn.debuffs.prewarn_deadline = os.clock() + math.max(0.0, tonumber(warn.settings.debuffs.batch_window) or 0.20);
 end
@@ -1640,6 +1747,7 @@ local function queue_debuff_loss(definition, name, counter)
         definition = definition,
         name = tostring(name),
         counter = counter,
+        assigned = debuff_instruction_is_assigned(definition),
     });
     local window = tonumber(warn.settings.debuffs.batch_window) or 0.20;
     warn.debuffs.batch_deadline = os.clock() + math.max(0.0, window);
@@ -1903,7 +2011,7 @@ local function flush_debuff_prewarn_batch()
         local event = events[1];
         table.insert(lines, tostring(event.name):upper() .. ': ' .. tostring(event.definition.name):upper() .. ' EXPIRING SOON');
         table.insert(lines, '~' .. format_seconds(event.remaining or 0) .. ' ESTIMATED');
-        if (event.definition.action ~= nil) then table.insert(lines, tostring(event.definition.action)); end
+        if (event.assigned and event.definition.action ~= nil) then table.insert(lines, tostring(event.definition.action)); end
     else
         table.insert(lines, string.format('%d CROWD-CONTROL EFFECTS EXPIRING SOON', #events));
         for i = 1, math.min(#events, 4) do
@@ -1989,14 +2097,14 @@ local function build_single_debuff_loss_text(event)
     if definition.id == 'sleep' then
         local action = (event.counter ~= nil)
             and tostring(event.counter.label or event.counter.name:upper())
-            or tostring(definition.action or 'RE-SLEEP / CONTROL IT!');
-        return name .. ' WOKE UP!\n' .. action;
+            or (event.assigned and tostring(definition.action or 'RE-SLEEP / CONTROL IT!') or nil);
+        return action ~= nil and (name .. ' WOKE UP!\n' .. action) or (name .. ' WOKE UP!');
     end
 
     local text = name .. ': ' .. tostring(definition.loss_label or (definition.name:upper() .. ' WORE OFF!'));
     if (event.counter ~= nil) then
         text = text .. '\n' .. tostring(event.counter.label or event.counter.name:upper());
-    elseif (definition.action ~= nil) then
+    elseif (event.assigned and definition.action ~= nil) then
         text = text .. '\n' .. tostring(definition.action);
     end
     return text;
@@ -2125,8 +2233,10 @@ local function flush_debuff_loss_batch()
 
         local headline = firstDef.multi_loss_label or
             string.format('%d MONSTERS LOST %s!', #events, tostring(firstDef.name):upper());
-        text = headline .. '\n' .. table.concat(parts, ', ') .. '\n' ..
-            tostring(firstDef.multi_action or firstDef.action or 'RE-CONTROL / REAPPLY!');
+        text = headline .. '\n' .. table.concat(parts, ', ');
+        if (events[1].assigned) then
+            text = text .. '\n' .. tostring(firstDef.multi_action or firstDef.action or 'RE-CONTROL / REAPPLY!');
+        end
         sound = resolve_debuff_sound(firstDef);
     else
         local lines = { string.format('%d DEBUFFS LOST!', #events) };
@@ -2135,7 +2245,9 @@ local function flush_debuff_loss_batch()
             table.insert(lines, tostring(event.name) .. ': ' .. tostring(event.definition.name));
         end
         if (#events > 4) then table.insert(lines, '...'); end
-        table.insert(lines, 'CHECK CONTROL / REAPPLY!');
+        local anyAssigned = false;
+        for _, event in ipairs(events) do if (event.assigned) then anyAssigned = true; break; end end
+        if (anyAssigned) then table.insert(lines, 'CHECK CONTROL / REAPPLY!'); end
         text = table.concat(lines, '\n');
         sound = warn.settings.sound.selected;
     end
@@ -2327,6 +2439,8 @@ local function record_timer_learning_event(actorText, abilityText, eventType)
                 actor = entry.actor,
                 ability = entry.ability,
                 interval = interval,
+                minimum = tonumber(entry.minimum) or interval,
+                maximum = tonumber(entry.maximum) or interval,
                 started_at = os.clock(),
                 next_at = os.clock() + interval,
             };
@@ -2336,13 +2450,117 @@ local function record_timer_learning_event(actorText, abilityText, eventType)
 
     if (becameSuggestion) then
         print(chat.header(addon.name):append(chat.message(string.format(
-            'Learned timer candidate: %s - %s repeats about %s (%d uses, %.0f%% confidence). Review it in the Learning tab.',
+            'Readiness observation: %s - %s repeated near %s (%d uses, %.0f%% confidence). Review it in Options > Learning.',
             tostring(entry.actor), tostring(entry.ability), format_seconds(entry.interval or 0),
             tonumber(entry.uses) or 0, (tonumber(entry.confidence) or 0) * 100))));
     elseif (warn.debug and reason ~= 'duplicate_resolution' and reason ~= 'too_close') then
         print(chat.header(addon.name):append(chat.message(string.format(
             'Timer learning: %s - %s (%s, use %d)', actor, ability, tostring(reason), tonumber(entry.uses) or 0))));
     end
+end
+
+local function action_event_key(actor, ability, eventType)
+    return (tostring(actor or '') .. '|' .. tostring(ability or '') .. '|' .. tostring(eventType or '')):lower();
+end
+
+local function process_detected_action(actorName, abilityName, eventType, rawMessage, source)
+    if (abilityName == nil or abilityName == '') then return false; end
+    actorName = clean_action_name(actorName);
+    abilityName = clean_action_name(abilityName);
+    if (abilityName == '') then return false; end
+
+    local key = action_event_key(actorName, abilityName, eventType);
+    local now = os.clock();
+    if (source == 'text' and warn.reactive.recent[key] ~= nil and (now - warn.reactive.recent[key]) < 1.5) then
+        if (warn.debug) then
+            print(chat.header(addon.name):append(chat.message('Text action deduplicated after packet recognition: ' .. abilityName)));
+        end
+        return true;
+    end
+    if (source == 'packet') then warn.reactive.recent[key] = now; end
+    if (source == 'packet' and ((warn.reactive.packet_actions or 0) % 100) == 0) then
+        for recentKey, timestamp in pairs(warn.reactive.recent) do
+            if ((now - timestamp) > 5.0) then warn.reactive.recent[recentKey] = nil; end
+        end
+    end
+
+    record_timer_learning_event(actorName, abilityName, eventType);
+
+    -- Only verified rules and explicit Custom Watches can create a player-facing alert.
+    -- Unknown observations remain local Learning evidence.
+    local synthetic = rawMessage or (actorName .. ' ' .. eventType .. ' ' .. abilityName);
+    local rule = find_context_ability_rule(eventType, abilityName, synthetic);
+    if (rule ~= nil and rule.verified == true and trigger_context_rule(rule, abilityName)) then
+        if (warn.debug) then
+            print(chat.header(addon.name):append(chat.message('Context Match: YES (' .. tostring(rule.id) .. ')')));
+        end
+        return true;
+    end
+
+    if (eventType == 'readies' and warn.enabledLookup[abilityName:lower()] ~= nil) then
+        trigger_warning(abilityName);
+        return true;
+    end
+    return false;
+end
+
+local function find_entity_name_by_server_id(serverId)
+    local entityManager = AshitaCore:GetMemoryManager():GetEntity();
+    if (entityManager == nil or serverId == nil) then return nil; end
+    local mapSize = entityManager:GetEntityMapSize();
+    for index = 0, mapSize - 1 do
+        local id = entityManager:GetServerId(index);
+        if (tonumber(id) == tonumber(serverId)) then
+            local entity = entityManager:GetRawEntity(index);
+            if (entity ~= nil and entity.Name ~= nil and tostring(entity.Name) ~= '') then
+                return tostring(entity.Name);
+            end
+        end
+    end
+    return nil;
+end
+
+local function resolve_packet_action_name(actionType, actionId)
+    local resources = AshitaCore:GetResourceManager();
+    if (resources == nil or actionId == nil) then return nil; end
+
+    if (actionType == 8) then
+        local spell = resources:GetSpellById(actionId);
+        if (spell ~= nil and spell.Name ~= nil) then return spell.Name[1]; end
+        return nil;
+    end
+
+    if (actionId < 256) then
+        local ability = resources:GetAbilityById(actionId);
+        if (ability ~= nil and ability.Name ~= nil) then return ability.Name[1]; end
+        return nil;
+    end
+    return resources:GetString('monsters.abilities', actionId - 256);
+end
+
+local function process_action_packet(event)
+    ensure_context_settings();
+    if (not warn.settings.context.packet_recognition or warn.actionPacket == nil) then return; end
+    local raw = event.data_raw or event.data;
+    local parsed, err = warn.actionPacket.parse(raw, event.size, function (data, offset, length)
+        return ashita.bits.unpack_be(data, 0, offset, length);
+    end);
+    if (parsed == nil) then
+        if (warn.debug) then print(chat.header(addon.name):append(chat.warning('0x028 parse skipped: ' .. tostring(err)))); end
+        return;
+    end
+
+    if (parsed.action_type ~= 7 and parsed.action_type ~= 8) then return; end
+    if (parsed.action_count == nil or parsed.action_count < 1 or parsed.message == 0) then return; end
+
+    local actor = find_entity_name_by_server_id(parsed.actor_id);
+    local ability = resolve_packet_action_name(parsed.action_type, parsed.action_param);
+    if (actor == nil or ability == nil or tostring(ability) == '') then return; end
+
+    local eventType = parsed.action_type == 7 and 'readies' or 'starts_casting';
+    warn.reactive.packet_actions = (warn.reactive.packet_actions or 0) + 1;
+    warn.reactive.last_packet_action = tostring(actor) .. ' - ' .. tostring(ability);
+    process_detected_action(actor, ability, eventType, nil, 'packet');
 end
 
 local function save_pending_learning_data()
@@ -3093,13 +3311,15 @@ end
 -- GUI: Warning Abilities tab
 --------------------------------------------------------------------------------------------------
 
-function render_abilities_tab()
-    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Abilities that trigger a warning when a monster readies them.');
-    imgui.InputText('Search', warn.search, 255);
+function render_abilities_tab(compact)
+    local paneHeight = compact and 220 or 330;
+    imgui.TextColored({ 0.72, 0.80, 0.90, 1.0 },
+        'Advanced fallback: receive a basic alert for a named ability without a curated encounter rule.');
+    imgui.InputText('Search Custom Watches', warn.search, 255);
 
     imgui.BeginGroup();
     imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'All Abilities');
-    imgui.BeginChild('warn_leftpane', { 340, 330 }, ImGuiChildFlags_Borders);
+    imgui.BeginChild('warn_leftpane', { 340, paneHeight }, ImGuiChildFlags_Borders);
 
     local searchTerm = warn.search[1] ~= nil and warn.search[1]:lower() or '';
     local idx = 1;
@@ -3123,7 +3343,7 @@ function render_abilities_tab()
 
     imgui.BeginGroup();
     imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Warn?');
-    imgui.BeginChild('warn_rightpane', { 250, 330 }, ImGuiChildFlags_Borders);
+    imgui.BeginChild('warn_rightpane', { 250, paneHeight }, ImGuiChildFlags_Borders);
     if (warn.selectedIndex[1] > -1 and warn.abilities[warn.selectedIndex[1]] ~= nil) then
         local entry = warn.abilities[warn.selectedIndex[1]];
         if (imgui.Checkbox('##warn_toggle', { entry[2] })) then
@@ -3254,147 +3474,163 @@ end
 -- GUI: Context tab
 --------------------------------------------------------------------------------------------------
 
+local function get_rule_group(rule)
+    if (rule.group ~= nil and tostring(rule.group) ~= '') then return tostring(rule.group); end
+    local encounter = tostring(rule.encounter or '');
+    for _, entry in ipairs(warn.rules.catalog or {}) do
+        if (entry.content == rule.content and entry.encounter == encounter) then return tostring(entry.group or 'General'); end
+    end
+    if (encounter:find('Volume 1', 1, true)) then return 'Volume 1'; end
+    if (encounter:find('Volume 2', 1, true)) then return 'Volume 2'; end
+    return 'General';
+end
+
+local function get_encounter_categories()
+    local map = {};
+    for _, entry in ipairs(warn.rules.catalog or {}) do
+        local content = tostring(entry.content or 'Other');
+        local group = tostring(entry.group or 'General');
+        map[content] = map[content] or {};
+        map[content][group] = true;
+    end
+    for _, rule in ipairs(get_all_context_rules()) do
+        if (rule.verified == true) then
+            local content = tostring(rule.content or 'Other');
+            map[content] = map[content] or {};
+            map[content][get_rule_group(rule)] = true;
+        end
+    end
+    local result = {};
+    for content, groups in pairs(map) do
+        local list = {};
+        for group in pairs(groups) do table.insert(list, group); end
+        table.sort(list);
+        table.insert(result, { content = content, groups = list });
+    end
+    table.sort(result, function (a, b) return a.content:lower() < b.content:lower(); end);
+    return result;
+end
+
+local function render_rule_detail(selectedRule)
+    if (selectedRule == nil) then
+        imgui.TextColored({ 0.62, 0.62, 0.62, 1.0 }, 'Select an encounter alert to review it.');
+        return;
+    end
+
+    imgui.TextColored({ 1.0, 0.90, 0.42, 1.0 }, get_rule_display_name(selectedRule));
+    imgui.TextColored({ 0.72, 0.78, 0.86, 1.0 },
+        tostring(selectedRule.content or 'Other') .. ' / ' .. tostring(selectedRule.encounter or selectedRule.actor or 'General'));
+
+    local severity = tostring(selectedRule.severity or 'important');
+    local prediction = warn.mechanics and warn.mechanics.prediction_labels[selectedRule.prediction] or selectedRule.prediction or 'Reactive';
+    local shape = warn.mechanics and warn.mechanics.target_shape_labels[selectedRule.target_shape] or selectedRule.target_shape or 'Unspecified';
+    local severityColor = severity == 'critical' and { 1.0, 0.35, 0.30, 1.0 }
+        or (severity == 'danger' and { 1.0, 0.72, 0.25, 1.0 } or { 0.55, 0.82, 1.0, 1.0 });
+    imgui.TextColored(severityColor, 'Severity: ' .. severity:upper());
+    imgui.SameLine();
+    imgui.TextColored({ 0.62, 0.82, 1.0, 1.0 }, '   Prediction: ' .. tostring(prediction));
+    imgui.SameLine();
+    imgui.TextColored({ 0.72, 0.88, 0.72, 1.0 }, '   Target: ' .. tostring(shape));
+
+    local enabled = is_rule_enabled(selectedRule);
+    if (imgui.Checkbox('Enable This Alert##warn_rule_enabled', { enabled })) then set_rule_enabled(selectedRule, not enabled); end
+
+    local override = get_rule_override(selectedRule, false);
+    local storedSound = (override ~= nil and override.sound ~= nil) and override.sound or '__default__';
+    local comboParts = { 'Default (' .. tostring(selectedRule.sound or 'Global Sound') .. ')' };
+    local comboValues = { '__default__' };
+    local soundIndex = 0;
+    for i = 1, #warn.soundFiles do
+        local filename = warn.soundFiles[i];
+        local displayName = filename == 'None' and filename or filename:gsub('%.wav$', ''):gsub('%.WAV$', '');
+        table.insert(comboParts, displayName);
+        table.insert(comboValues, filename);
+        if (storedSound ~= '__default__' and filename:lower() == tostring(storedSound):lower()) then soundIndex = #comboValues - 1; end
+    end
+    local selected = { soundIndex };
+    if (imgui.Combo('Alert Sound##warn_rule_sound_combo', selected, table.concat(comboParts, '\0') .. '\0\0')) then
+        set_rule_sound_override(selectedRule, comboValues[selected[1] + 1] or '__default__');
+    end
+
+    if (imgui.Button('Test Alert')) then trigger_context_rule(selectedRule, selectedRule.ability or selectedRule.actor or selectedRule.id); end
+    imgui.SameLine();
+    if (imgui.Button('Reset Alert')) then reset_rule_override(selectedRule); end
+    if (selectedRule.message ~= nil) then
+        imgui.TextColored({ 0.65, 1.0, 0.65, 1.0 }, 'Message: ' .. tostring(selectedRule.message):gsub('\n', ' / '));
+    end
+    imgui.TextColored({ 0.55, 0.58, 0.64, 1.0 }, 'Rule ID: ' .. tostring(selectedRule.id));
+end
+
 function render_context_tab()
     ensure_context_settings();
-    ensure_debuff_settings();
     ensure_rule_settings();
-    local c = warn.settings.context;
+    imgui.BeginChild('warn_encounters_scroll', { 0, 0 }, 0);
+    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Encounter Intelligence');
+    imgui.TextColored({ 0.70, 0.78, 0.88, 1.0 },
+        'Browse verified mechanics. Unknown observations enter Learning and never alert unless you explicitly Custom Watch them.');
+    imgui.InputText('Search Encounters', warn.ruleSearch, 255);
 
-    if (imgui.Checkbox('Enable Contextual Encounter Rules', { c.enabled })) then
-        c.enabled = not c.enabled;
-        save_settings();
-    end
-    imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 }, 'Known mechanics trigger automatically; they do not need to be in the manual warning list.');
-
-    if (imgui.Checkbox('Show Job-Specific Counters', { c.job_counters })) then
-        c.job_counters = not c.job_counters;
-        save_settings();
-    end
-    imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 }, 'Counters appear only when Warn verifies you can actually use them now.');
-
-    if (imgui.Checkbox('Use Contextual / Per-Rule Sounds', { c.contextual_sounds })) then
-        c.contextual_sounds = not c.contextual_sounds;
-        save_settings();
-    end
-    imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 }, 'When disabled, every encounter alert uses the global sound from the Sound tab.');
-
-    if (imgui.Checkbox('Enable Encounter State Triggers', { c.state_triggers })) then
-        c.state_triggers = not c.state_triggers;
-        save_settings();
-    end
-    imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 }, 'State triggers can warn before a move is readied, such as Housemaker beginning its run.');
-
-    imgui.Separator();
-    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Current Job: ' .. get_player_job_text());
-    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, string.format('Loaded Rules: %d action / %d state', #(warn.rules.ability_rules or {}), #(warn.rules.state_rules or {})));
-    local coverageCounts = get_catalog_counts();
-    imgui.TextColored({ 0.75, 0.75, 0.75, 1.0 }, string.format('Indexed Encounters: Ambuscade V1 %d / V2 %d / HTMB %d', coverageCounts.ambu1, coverageCounts.ambu2, coverageCounts.htmb));
-
-    if (imgui.Button('Reload Context Rules')) then
-        load_context_rules();
-        print_rule_summary();
-    end
-    imgui.SameLine();
-    if (imgui.Button('Refresh Sounds')) then
-        refresh_sound_files(true);
-    end
-
-    imgui.Separator();
-    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Encounter Alerts');
-    imgui.InputText('Search Rules##warn_rule_search', warn.ruleSearch, 255);
-
+    local categories = get_encounter_categories();
     local allRules = get_all_context_rules();
-    local searchTerm = warn.ruleSearch[1] ~= nil and warn.ruleSearch[1]:lower() or '';
-
-    imgui.BeginChild('warn_context_rules', { 0, 165 }, ImGuiChildFlags_Borders);
-    for _, rule in ipairs(allRules) do
-        local content = tostring(rule.content or 'Other');
-        local encounter = tostring(rule.encounter or rule.actor or 'General');
-        local display = get_rule_display_name(rule);
-        local haystack = (tostring(rule.id or '') .. ' ' .. content .. ' ' .. encounter .. ' ' .. display .. ' ' .. tostring(rule.message or '')):lower();
-        if (searchTerm == '' or haystack:find(searchTerm, 1, true) ~= nil) then
-            local enabledPrefix = is_rule_enabled(rule) and '[X] ' or '[ ] ';
-            local typePrefix = rule.__rule_type == 'state' and '[STATE] ' or '';
-            local label = enabledPrefix .. typePrefix .. content .. ' / ' .. display .. '##rule_' .. tostring(rule.id);
-            if (imgui.Selectable(label, warn.selectedRuleId == rule.id)) then
-                warn.selectedRuleId = rule.id;
+    imgui.BeginChild('warn_encounter_categories', { 205, 410 }, ImGuiChildFlags_Borders);
+    if (imgui.Selectable('All Encounters', warn.encounterContent == nil)) then
+        warn.encounterContent = nil; warn.encounterGroup = nil;
+    end
+    for _, category in ipairs(categories) do
+        imgui.Separator();
+        if (imgui.Selectable(category.content, warn.encounterContent == category.content and warn.encounterGroup == nil)) then
+            warn.encounterContent = category.content; warn.encounterGroup = nil;
+        end
+        for _, group in ipairs(category.groups) do
+            local selectedGroup = warn.encounterContent == category.content and warn.encounterGroup == group;
+            if (imgui.Selectable('   ' .. group .. '##category_' .. category.content .. '_' .. group, selectedGroup)) then
+                warn.encounterContent = category.content; warn.encounterGroup = group;
             end
         end
     end
     imgui.EndChild();
+    imgui.SameLine();
+
+    imgui.BeginChild('warn_encounter_browser', { 0, 410 }, ImGuiChildFlags_Borders);
+    local searchTerm = warn.ruleSearch[1] ~= nil and warn.ruleSearch[1]:lower() or '';
+    local visibleRules = {};
+    for _, rule in ipairs(allRules) do
+        local content = tostring(rule.content or 'Other');
+        local group = get_rule_group(rule);
+        local encounter = tostring(rule.encounter or rule.actor or 'General');
+        local haystack = (tostring(rule.id or '') .. ' ' .. content .. ' ' .. group .. ' ' .. encounter .. ' ' .. get_rule_display_name(rule) .. ' ' .. tostring(rule.message or '')):lower();
+        local categoryMatch = (warn.encounterContent == nil or content == warn.encounterContent)
+            and (warn.encounterGroup == nil or group == warn.encounterGroup);
+        if (rule.verified == true and categoryMatch and (searchTerm == '' or haystack:find(searchTerm, 1, true) ~= nil)) then
+            table.insert(visibleRules, rule);
+        end
+    end
+
+    imgui.BeginChild('warn_encounter_rule_list', { 0, 150 }, ImGuiChildFlags_Borders);
+    for _, rule in ipairs(visibleRules) do
+        local enabledPrefix = is_rule_enabled(rule) and '[X] ' or '[ ] ';
+        local typePrefix = rule.__rule_type == 'state' and '[STATE] ' or '';
+        if (imgui.Selectable(enabledPrefix .. typePrefix .. get_rule_display_name(rule) .. '##rule_' .. tostring(rule.id), warn.selectedRuleId == rule.id)) then
+            warn.selectedRuleId = rule.id;
+        end
+    end
+    if (#visibleRules == 0) then imgui.TextColored({ 0.62, 0.62, 0.62, 1.0 }, 'No verified alerts match this view.'); end
+    imgui.EndChild();
 
     local selectedRule = find_context_rule_by_id(warn.selectedRuleId);
-    if (selectedRule == nil and #allRules > 0) then
-        selectedRule = allRules[1];
-        warn.selectedRuleId = selectedRule.id;
+    local selectedVisible = false;
+    for _, rule in ipairs(visibleRules) do if (selectedRule == rule) then selectedVisible = true; break; end end
+    if (not selectedVisible) then selectedRule = visibleRules[1]; warn.selectedRuleId = selectedRule and selectedRule.id or nil; end
+    render_rule_detail(selectedRule);
+    imgui.EndChild();
+
+    imgui.Separator();
+    if (imgui.CollapsingHeader('Custom Watches (Advanced)', 0)) then
+        render_abilities_tab(true);
+    else
+        imgui.TextColored({ 0.58, 0.62, 0.68, 1.0 }, 'Collapsed - use this only for uncatalogued abilities you explicitly want to see.');
     end
-
-    if (selectedRule ~= nil) then
-        imgui.Separator();
-        imgui.TextColored({ 1.0, 1.0, 0.45, 1.0 }, get_rule_display_name(selectedRule));
-        imgui.TextColored({ 0.75, 0.75, 0.75, 1.0 }, 'Content: ' .. tostring(selectedRule.content or 'Other') .. '   Encounter: ' .. tostring(selectedRule.encounter or selectedRule.actor or 'General'));
-        imgui.TextColored({ 0.75, 0.75, 0.75, 1.0 }, 'Rule ID: ' .. tostring(selectedRule.id));
-
-        local enabled = is_rule_enabled(selectedRule);
-        if (imgui.Checkbox('Enable This Alert##warn_rule_enabled', { enabled })) then
-            set_rule_enabled(selectedRule, not enabled);
-        end
-
-        imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Alert Sound Override:');
-        local override = get_rule_override(selectedRule, false);
-        local storedSound = (override ~= nil and override.sound ~= nil) and override.sound or '__default__';
-
-        -- Index 0 is the database default. Remaining entries map to the scanned sounds list,
-        -- including 'None', which intentionally makes this one alert silent.
-        local comboParts = { 'Default (' .. tostring(selectedRule.sound or 'Global Sound') .. ')' };
-        local comboValues = { '__default__' };
-        local soundIndex = 0;
-        for i = 1, #warn.soundFiles do
-            local filename = warn.soundFiles[i];
-            local displayName = filename;
-            if (filename ~= 'None') then
-                displayName = filename:gsub('%.wav$', ''):gsub('%.WAV$', '');
-            end
-            table.insert(comboParts, displayName);
-            table.insert(comboValues, filename);
-            if (storedSound ~= '__default__' and filename:lower() == tostring(storedSound):lower()) then
-                soundIndex = #comboValues - 1;
-            end
-        end
-
-        local soundNames = table.concat(comboParts, '\0') .. '\0\0';
-        local selected = { soundIndex };
-        if (imgui.Combo('##warn_rule_sound_combo', selected, soundNames)) then
-            set_rule_sound_override(selectedRule, comboValues[selected[1] + 1] or '__default__');
-        end
-
-        if (imgui.Button('Test This Alert')) then
-            trigger_context_rule(selectedRule, selectedRule.ability or selectedRule.actor or selectedRule.id);
-        end
-        imgui.SameLine();
-        if (imgui.Button('Test Alert Sound')) then
-            if (warn.settings.context.contextual_sounds) then
-                local sound, overridden = resolve_rule_sound(selectedRule);
-                if (overridden) then
-                    play_sound_file(sound);
-                elseif (sound ~= nil and sound ~= '') then
-                    play_sound_file(sound);
-                else
-                    play_selected_sound();
-                end
-            else
-                play_selected_sound();
-            end
-        end
-        imgui.SameLine();
-        if (imgui.Button('Reset Alert')) then
-            reset_rule_override(selectedRule);
-        end
-
-        if (selectedRule.message ~= nil) then
-            imgui.TextColored({ 0.65, 1.0, 0.65, 1.0 }, 'Message: ' .. tostring(selectedRule.message):gsub('\n', ' / '));
-        end
-    end
+    imgui.EndChild();
 end
 
 --------------------------------------------------------------------------------------------------
@@ -3678,7 +3914,7 @@ function render_timer_learning_tab()
     imgui.TextColored({ 0.70, 0.78, 0.88, 1.0 },
         'Warn observes repeated hostile actions locally. Learned data is never submitted automatically.');
     imgui.TextColored({ 0.70, 0.78, 0.88, 1.0 },
-        'Candidates do not become timers until you approve them.');
+        'Unknown abilities never alert automatically. Accepted observations remain uncertain readiness windows, not countdowns.');
 
     local minimumUses = { tonumber(cfg.minimum_uses) or 3 };
     if (imgui.SliderFloat('Uses Before Suggesting##warn_learning_uses', minimumUses, 3.0, 6.0, '%.0f')) then
@@ -3688,16 +3924,16 @@ function render_timer_learning_tab()
 
     imgui.Separator();
     imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, string.format(
-        'Review Queue: %d   Approved Personal Timers: %d   Still Observing: %d',
+        'Review Queue: %d   Accepted Readiness Windows: %d   Still Observing: %d',
         counts.suggested, counts.approved, counts.observing));
 
     imgui.Separator();
-    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Timer Suggestions');
+    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Readiness Suggestions');
     imgui.BeginChild('warn_learning_suggestions', { 0, 205 }, ImGuiChildFlags_Borders);
     local suggestions = get_sorted_learning_entries({ suggested = true });
     if (#suggestions == 0) then
         imgui.TextColored({ 0.62, 0.62, 0.62, 1.0 },
-            'No timer suggestions yet. Play normally; consistent repeats will appear here.');
+                'No readiness suggestions yet. Play normally; consistent repeats will appear here.');
     else
         for index, row in ipairs(suggestions) do
             local key = row.key;
@@ -3711,7 +3947,7 @@ function render_timer_learning_tab()
                 (tonumber(entry.confidence) or 0) * 100,
                 format_seconds(entry.minimum or entry.interval or 0),
                 format_seconds(entry.maximum or entry.interval or 0)));
-            if (imgui.Button('Approve Personal Timer##warn_learning_approve_' .. key)) then
+            if (imgui.Button('Accept Readiness Window##warn_learning_approve_' .. key)) then
                 set_learning_status(key, entry, 'approved');
             end
             imgui.SameLine();
@@ -3729,11 +3965,11 @@ function render_timer_learning_tab()
     imgui.EndChild();
 
     imgui.Separator();
-    imgui.TextColored({ 0.55, 1.0, 0.60, 1.0 }, 'Approved Personal Timers');
+    imgui.TextColored({ 0.55, 1.0, 0.60, 1.0 }, 'Accepted Readiness Windows');
     imgui.BeginChild('warn_learning_approved', { 0, 190 }, ImGuiChildFlags_Borders);
     local approved = get_sorted_learning_entries({ approved = true });
     if (#approved == 0) then
-        imgui.TextColored({ 0.62, 0.62, 0.62, 1.0 }, 'No personal timers approved.');
+        imgui.TextColored({ 0.62, 0.62, 0.62, 1.0 }, 'No readiness windows accepted.');
     else
         local now = os.clock();
         for index, row in ipairs(approved) do
@@ -3741,19 +3977,23 @@ function render_timer_learning_tab()
             local entry = row.entry;
             if (index > 1) then imgui.Separator(); end
             local active = warn.timerLearning.active_timers[key];
-            local timingText = 'Waiting for next observed use';
+            local timingText = 'Waiting for the next observed use';
             if (active ~= nil) then
-                local remaining = (active.next_at or now) - now;
-                if (remaining >= 0) then
-                    timingText = 'Estimated next use: ~' .. format_seconds(remaining);
+                local earliest = (active.started_at or now) + (active.minimum or active.interval or 0);
+                local latest = (active.started_at or now) + (active.maximum or active.interval or 0);
+                if (now < earliest) then
+                    timingText = 'Possible readiness in ' .. format_seconds(earliest - now) .. ' to ' .. format_seconds(latest - now);
+                elseif (now <= latest) then
+                    timingText = 'Likely ready now (uncertain window)';
                 else
-                    timingText = 'Estimate overdue: ? +' .. format_seconds(-remaining);
+                    timingText = 'Readiness window overdue: ? +' .. format_seconds(now - latest);
                 end
             end
             imgui.TextColored({ 0.65, 1.0, 0.70, 1.0 },
                 tostring(entry.actor) .. ' - ' .. tostring(entry.ability));
-            imgui.Text(string.format('Approved interval: ~%s   |   %s',
-                format_seconds(entry.approved_interval or entry.interval or 0), timingText));
+            imgui.Text(string.format('Observed range: %s to %s   |   %s',
+                format_seconds(entry.minimum or entry.approved_interval or entry.interval or 0),
+                format_seconds(entry.maximum or entry.approved_interval or entry.interval or 0), timingText));
             if (imgui.Button('Return to Review##warn_learning_review_' .. key)) then
                 set_learning_status(key, entry, 'suggested');
             end
@@ -3919,6 +4159,108 @@ function render_sound_tab()
 end
 
 --------------------------------------------------------------------------------------------------
+-- GUI: Options navigation
+--------------------------------------------------------------------------------------------------
+
+local function render_responsibility_options()
+    ensure_responsibility_settings();
+    local profile, key = get_current_responsibility_profile(true);
+    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Responsibilities');
+    imgui.TextColored({ 0.70, 0.78, 0.88, 1.0 }, 'Profile: ' .. get_player_job_text());
+    imgui.TextColored({ 0.66, 0.72, 0.80, 1.0 },
+        'Warn detects capabilities automatically. These choices describe what your party expects you to handle.');
+    imgui.TextColored({ 0.66, 0.72, 0.80, 1.0 },
+        'Critical mechanic facts always remain visible; these settings only suppress role-specific action instructions.');
+    imgui.Separator();
+
+    if (profile == nil or warn.mechanics == nil) then
+        imgui.TextColored({ 1.0, 0.45, 0.35, 1.0 }, 'Character/job information is not available yet.');
+        return;
+    end
+
+    for _, definition in ipairs(warn.mechanics.responsibilities) do
+        local enabled = profile[definition.id] == true;
+        if (imgui.Checkbox(definition.label .. '##responsibility_' .. definition.id, { enabled })) then
+            profile[definition.id] = not enabled;
+            save_settings();
+        end
+        imgui.SameLine();
+        imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 }, definition.description);
+    end
+
+    imgui.Separator();
+    if (imgui.Button('Reset This Job Profile')) then
+        local _, mainJob = get_player_profile_identity();
+        local defaults = warn.mechanics.default_profile(mainJob);
+        local replacement = T{};
+        for responsibility, enabled in pairs(defaults) do replacement[responsibility] = enabled; end
+        warn.settings.responsibilities.profiles[key] = replacement;
+        save_settings();
+    end
+    imgui.TextColored({ 0.58, 0.62, 0.68, 1.0 },
+        'This profile is remembered automatically for this character and main job/subjob combination.');
+end
+
+local function render_alert_options()
+    ensure_context_settings();
+    local cfg = warn.settings.context;
+    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Alert Behavior');
+
+    local controls = {
+        { key = 'enabled', label = 'Enable Verified Encounter Alerts', help = 'Only verified database rules create contextual alerts.' },
+        { key = 'job_counters', label = 'Show Assigned Action Instructions', help = 'Requires both an enabled responsibility and a capability Ashita confirms is usable.' },
+        { key = 'packet_recognition', label = 'Use Passive Packet Recognition', help = 'Reads incoming actions for faster reaction; never modifies, blocks or injects packets.' },
+        { key = 'state_triggers', label = 'Enable Encounter State Triggers', help = 'Allows verified movement, presence and maintained-state mechanics.' },
+        { key = 'contextual_sounds', label = 'Use Contextual / Per-Alert Sounds', help = 'When disabled, every encounter alert uses the global sound.' },
+    };
+    for _, control in ipairs(controls) do
+        local enabled = cfg[control.key] == true;
+        if (imgui.Checkbox(control.label .. '##alert_' .. control.key, { enabled })) then
+            cfg[control.key] = not enabled;
+            save_settings();
+        end
+        imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 }, control.help);
+    end
+
+    imgui.Separator();
+    imgui.TextColored({ 0.72, 0.80, 0.90, 1.0 }, 'Severity Levels');
+    imgui.TextColored({ 0.55, 0.82, 1.0, 1.0 }, 'IMPORTANT - informational mechanic or useful state change');
+    imgui.TextColored({ 1.0, 0.72, 0.25, 1.0 }, 'DANGER - meaningful damage, control or positioning risk');
+    imgui.TextColored({ 1.0, 0.35, 0.30, 1.0 }, 'CRITICAL - lethal or fight-changing mechanic; factual warning always remains visible');
+    imgui.TextColored({ 0.58, 0.62, 0.68, 1.0 }, string.format(
+        'Reactive packets recognized this session: %d%s', warn.reactive.packet_actions or 0,
+        warn.reactive.last_packet_action ~= '' and ('   Last: ' .. warn.reactive.last_packet_action) or ''));
+end
+
+function render_options_tab()
+    local learningCounts = get_learning_counts();
+    local sections = {
+        { label = 'Responsibilities', render = render_responsibility_options },
+        { label = learningCounts.suggested > 0 and ('Learning (' .. learningCounts.suggested .. ')') or 'Learning', render = render_timer_learning_tab },
+        { label = warn.community.status == 'update_available' and 'Database (!)' or 'Database', render = render_community_database_tab },
+        { label = 'Debuffs', render = render_debuffs_tab },
+        { label = 'Alerts', render = render_alert_options },
+        { label = 'Appearance', render = render_appearance_tab },
+        { label = 'Sound', render = render_sound_tab },
+    };
+
+    imgui.BeginChild('warn_options_nav', { 175, 0 }, ImGuiChildFlags_Borders);
+    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Options');
+    imgui.Separator();
+    for index, section in ipairs(sections) do
+        if (imgui.Selectable(section.label .. '##warn_option_' .. index, warn.optionsSection[1] == index)) then
+            warn.optionsSection[1] = index;
+        end
+    end
+    imgui.EndChild();
+    imgui.SameLine();
+    imgui.BeginChild('warn_options_content', { 0, 0 }, ImGuiChildFlags_Borders);
+    local selected = sections[warn.optionsSection[1]] or sections[1];
+    selected.render();
+    imgui.EndChild();
+end
+
+--------------------------------------------------------------------------------------------------
 -- GUI: main window
 --------------------------------------------------------------------------------------------------
 
@@ -3930,49 +4272,20 @@ function render_config_window()
     queue_automatic_community_check();
 
     if (not warn.guiSizeInitialized) then
-        imgui.SetNextWindowSize({ 700, 720, });
+        imgui.SetNextWindowSize({ 860, 760, });
         warn.guiSizeInitialized = true;
     end
-    imgui.SetNextWindowSizeConstraints({ 600, 560, }, { FLT_MAX, FLT_MAX, });
+    imgui.SetNextWindowSizeConstraints({ 720, 620, }, { FLT_MAX, FLT_MAX, });
     if (imgui.Begin('Warn', warn.isGuiOpen, 0)) then
         if (imgui.BeginTabBar('##warn_tabbar', ImGuiTabBarFlags_NoCloseWithMiddleMouseButton)) then
-
-            if (imgui.BeginTabItem('Abilities', nil)) then
-                render_abilities_tab();
-                imgui.EndTabItem();
-            end
 
             if (imgui.BeginTabItem('Encounters', nil)) then
                 render_context_tab();
                 imgui.EndTabItem();
             end
 
-            if (imgui.BeginTabItem('Appearance', nil)) then
-                render_appearance_tab();
-                imgui.EndTabItem();
-            end
-
-            if (imgui.BeginTabItem('Debuffs', nil)) then
-                render_debuffs_tab();
-                imgui.EndTabItem();
-            end
-
-            local learningCounts = get_learning_counts();
-            local learningLabel = (learningCounts.suggested > 0)
-                and ('Learning (' .. tostring(learningCounts.suggested) .. ')') or 'Learning';
-            if (imgui.BeginTabItem(learningLabel, nil)) then
-                render_timer_learning_tab();
-                imgui.EndTabItem();
-            end
-
-            local databaseLabel = (warn.community.status == 'update_available') and 'Database (!)' or 'Database';
-            if (imgui.BeginTabItem(databaseLabel, nil)) then
-                render_community_database_tab();
-                imgui.EndTabItem();
-            end
-
-            if (imgui.BeginTabItem('Sound', nil)) then
-                render_sound_tab();
+            if (imgui.BeginTabItem('Options', nil)) then
+                render_options_tab();
                 imgui.EndTabItem();
             end
 
@@ -3992,6 +4305,7 @@ ashita.events.register('load', 'load_cb', function ()
     warn.ruleSettings = settings.load(default_rule_settings, 'warn_rule_settings');
     warn.learningData = settings.load(default_learning_data, 'warn_learning');
     ensure_context_settings();
+    ensure_responsibility_settings();
     ensure_learning_settings();
     ensure_community_settings();
     ensure_debuff_settings();
@@ -4042,6 +4356,10 @@ ashita.events.register('load', 'load_cb', function ()
     });
 
     load_abilities();
+    local mechanicOk, mechanicErr = load_mechanic_modules();
+    if (not mechanicOk) then
+        print(chat.header(addon.name):append(chat.error(mechanicErr)));
+    end
     local communityOk, communityErr = load_community_modules();
     if (communityOk) then
         load_installed_community_database(false);
@@ -4495,30 +4813,14 @@ ashita.events.register('text_in', 'text_in_cb', function (e)
     end
 
     local actorName = clean_action_name(string.sub(e.message, 1, math.max(0, verbStart - 1)));
-    record_timer_learning_event(actorName, abilityName, eventType);
-
-    -- Contextual rules have priority over the manual warning list.
-    local rule = find_context_ability_rule(eventType, abilityName, e.message);
-    if (rule ~= nil and trigger_context_rule(rule, abilityName)) then
-        if (warn.debug) then
-            print(chat.header(addon.name):append(chat.message('Context Match: YES (' .. tostring(rule.id) .. ')')));
-        end
-        return;
-    end
-
-    -- Manual warnings remain a readies-only system so they do not fire twice.
-    if (eventType == 'readies') then
-        local matched = warn.enabledLookup[abilityName:lower()];
-        if (warn.debug) then
-            print(chat.header(addon.name):append(chat.message('Manual Match: ' .. (matched ~= nil and 'YES' or 'NO'))));
-        end
-        if (matched ~= nil) then
-            trigger_warning(abilityName);
-        end
-    end
+    process_detected_action(actorName, abilityName, eventType, e.message, 'text');
 end);
 
 ashita.events.register('packet_in', 'packet_in_cb', function (e)
+    if (e.id == 0x0028) then
+        process_action_packet(e);
+    end
+
     -- Use the raw battle-message packet as the primary debuff-loss signal.  This avoids
     -- dependency on chat filters, localization wording, or whether text_in sees the line.
     if (e.id == 0x0029) then
@@ -4533,6 +4835,7 @@ ashita.events.register('packet_in', 'packet_in_cb', function (e)
         warn.debuffs.mob_counts = {};
         warn.debuffs.next_scan = 0;
         warn.timerLearning.active_timers = {};
+        warn.reactive.recent = {};
     end
 end);
 

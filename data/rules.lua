@@ -11,7 +11,7 @@ local modules = {
 };
 
 local result = {
-    version = 5,
+    version = 6,
     ability_rules = {},
     state_rules = {},
     catalog = {},
