@@ -86,6 +86,8 @@ Live messages use three visual levels: **Important**, **Danger**, and **Critical
 card's background opacity is independently adjustable under **Options → Appearance**; lowering
 it does not dim the alert text or the critical screen-edge cue. Card size, edge intensity,
 duration, and Reduced Motion are configurable separately, with test buttons for every level.
+The positioning preview appears only when explicitly requested and closes automatically when
+leaving Appearance; **Reset Warning Position** restores its normal placement.
 
 Advanced theme overrides are data-only. A custom `theme.txt` and optional `launcher.png` can
 be placed in `Ashita/config/addons/warn/themes/<name>/`; theme files cannot execute Lua.

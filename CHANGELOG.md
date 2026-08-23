@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.3
+- Changed the Appearance warning-card preview from an automatic persistent element to an explicit **Show / Hide Warning Preview** control.
+- The preview now closes automatically when leaving Appearance or closing the dashboard, so it cannot masquerade as a stuck live warning.
+- Added a one-click **Reset Warning Position** control.
+- Reworked preview repositioning with full-card mouse capture so fast dragging does not lose the preview.
+
 ## 2.1.2
 - Reworked the W launcher as a full-surface interactive control so it retains mouse capture during fast movement instead of depending on continuous image hover.
 - Removed the Ctrl-drag requirement: drag normally to reposition, or click without dragging to open or close Warn.

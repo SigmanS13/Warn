@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '2.1.2';
+addon.version   = '2.1.3';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -246,6 +246,10 @@ warn = T{
         launcher_drag_mouse_y = nil,
         launcher_press_active = false,
         launcher_dragged = false,
+        warning_preview_visible = false,
+        warning_preview_drag_mouse_x = nil,
+        warning_preview_drag_mouse_y = nil,
+        warning_preview_drag_active = false,
     },
 
     debug = false,
@@ -3420,9 +3424,10 @@ local function render_warning_card(state, is_critical, previewing)
 
     local flags = bit.bor(ImGuiWindowFlags_NoDecoration, ImGuiWindowFlags_NoResize,
         ImGuiWindowFlags_NoScrollbar, ImGuiWindowFlags_NoSavedSettings,
-        ImGuiWindowFlags_NoBackground, ImGuiWindowFlags_NoFocusOnAppearing);
-    if (not previewing) then flags = bit.bor(flags, ImGuiWindowFlags_NoMove, ImGuiWindowFlags_NoInputs); end
-    imgui.SetNextWindowPos({ x, y }, previewing and ImGuiCond_Once or ImGuiCond_Always);
+        ImGuiWindowFlags_NoBackground, ImGuiWindowFlags_NoFocusOnAppearing,
+        ImGuiWindowFlags_NoMove);
+    if (not previewing) then flags = bit.bor(flags, ImGuiWindowFlags_NoInputs); end
+    imgui.SetNextWindowPos({ x, y }, ImGuiCond_Always);
     imgui.SetNextWindowSize({ width, height }, ImGuiCond_Always);
 
     if (imgui.Begin('##warn_live_card', true, flags)) then
@@ -3446,6 +3451,36 @@ local function render_warning_card(state, is_critical, previewing)
         draw:AddRectFilled({ win_x, win_y }, { win_x + 5 * scale, win_y + height }, imgui.GetColorU32(accent), 4 * scale);
         draw:AddLine({ win_x + 18 * scale, win_y + 31 * scale }, { win_x + width - 18 * scale, win_y + 31 * scale }, imgui.GetColorU32(color_with_alpha(active_theme.brass_dim, entry_alpha)), math.max(1, scale));
 
+        if (previewing) then
+            imgui.SetCursorScreenPos({ win_x, win_y });
+            imgui.InvisibleButton('##warn_preview_drag_surface', { width, height });
+            if (imgui.IsItemClicked(0)) then
+                warn.ui.warning_preview_drag_active = true;
+                warn.ui.warning_preview_drag_mouse_x, warn.ui.warning_preview_drag_mouse_y = imgui.GetMousePos();
+            end
+            if (warn.ui.warning_preview_drag_active and imgui.IsMouseDown(0)) then
+                local mouse_x, mouse_y = imgui.GetMousePos();
+                if (imgui.IsMouseDragging(0, 3) and warn.ui.warning_preview_drag_mouse_x ~= nil and
+                    warn.ui.warning_preview_drag_mouse_y ~= nil) then
+                    warn.settings.overlay.position_x = math.floor(math.max(0, math.min(display.x - width,
+                        x + mouse_x - warn.ui.warning_preview_drag_mouse_x)));
+                    warn.settings.overlay.position_y = math.floor(math.max(0, math.min(display.y - height,
+                        y + mouse_y - warn.ui.warning_preview_drag_mouse_y)));
+                    warn.ui.next_position_save = os.clock() + 0.35;
+                end
+                warn.ui.warning_preview_drag_mouse_x = mouse_x;
+                warn.ui.warning_preview_drag_mouse_y = mouse_y;
+            elseif (warn.ui.warning_preview_drag_active and imgui.IsMouseReleased(0)) then
+                warn.ui.warning_preview_drag_active = false;
+                warn.ui.warning_preview_drag_mouse_x = nil;
+                warn.ui.warning_preview_drag_mouse_y = nil;
+            elseif (not imgui.IsMouseDown(0)) then
+                warn.ui.warning_preview_drag_active = false;
+                warn.ui.warning_preview_drag_mouse_x = nil;
+                warn.ui.warning_preview_drag_mouse_y = nil;
+            end
+        end
+
         imgui.SetCursorScreenPos({ win_x + 18 * scale, win_y + 8 * scale });
         set_ui_font_scale(0.82 * scale);
         imgui.TextColored(color_with_alpha(severity_color, entry_alpha), severity:upper());
@@ -3465,15 +3500,6 @@ local function render_warning_card(state, is_critical, previewing)
         end
         set_ui_font_scale(1.0);
 
-        if (previewing) then
-            local moved_x, moved_y = imgui.GetWindowPos();
-            moved_x = math.floor(moved_x); moved_y = math.floor(moved_y);
-            if (moved_x ~= math.floor(warn.settings.overlay.position_x) or moved_y ~= math.floor(warn.settings.overlay.position_y)) then
-                warn.settings.overlay.position_x = moved_x;
-                warn.settings.overlay.position_y = moved_y;
-                warn.ui.next_position_save = os.clock() + 0.35;
-            end
-        end
     end
     imgui.End();
 end
@@ -3481,6 +3507,11 @@ end
 function render_overlay()
     ensure_ui_settings();
     if (warn.font ~= nil) then warn.font:SetVisible(false); end
+    local appearance_open = warn.isGuiOpen[1] and warn.mainTab[1] == 2 and warn.optionsSection[1] == 6;
+    if (not appearance_open) then
+        warn.ui.warning_preview_visible = false;
+        warn.ui.warning_preview_drag_active = false;
+    end
     if (warn.active.firing) then
         local duration = warn.active.duration or warn.settings.overlay.duration;
         if ((os.clock() - warn.active.startTime) >= duration) then
@@ -3492,7 +3523,7 @@ function render_overlay()
         render_warning_card(warn.critical, true, false);
     elseif (warn.active.firing) then
         render_warning_card(warn.active, false, false);
-    elseif (warn.isGuiOpen[1] and warn.mainTab[1] == 2 and warn.optionsSection[1] == 6) then
+    elseif (appearance_open and warn.ui.warning_preview_visible == true) then
         render_warning_card({ severity = 'important', prediction = 'reactive', startTime = os.clock() }, false, true);
     end
 
@@ -3651,6 +3682,21 @@ function render_appearance_tab()
 
     imgui.Separator();
     imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Live Warning Cards');
+    if (imgui.Button(warn.ui.warning_preview_visible and 'Hide Warning Preview' or 'Show Warning Preview')) then
+        warn.ui.warning_preview_visible = not warn.ui.warning_preview_visible;
+    end
+    imgui.SameLine();
+    if (imgui.Button('Reset Warning Position')) then
+        local display = imgui.GetIO().DisplaySize;
+        local preview_scale = get_ui_scale() * math.max(0.70, math.min(1.40, tonumber(s.card_scale) or 1.0)) * 0.86;
+        local preview_width = math.min(display.x * 0.56, math.max(360 * preview_scale, 540 * preview_scale));
+        s.position_x = math.floor((display.x - preview_width) / 2);
+        s.position_y = math.floor(display.y * 0.24);
+        warn.ui.warning_preview_visible = true;
+        save_settings();
+    end
+    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 },
+        'The preview is temporary and closes automatically when you leave Appearance or close Warn.');
     local card_opacity = { tonumber(s.card_opacity) or 0.86 };
     if (imgui.SliderFloat('Warning Card Opacity', card_opacity, 0.0, 1.0, '%.2f')) then
         s.card_opacity = card_opacity[1];
@@ -3688,7 +3734,7 @@ function render_appearance_tab()
     end
 
     imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Warning Position');
-    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 }, 'Drag the live preview, or enter an exact position below. Critical alerts remain upper-center.');
+    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 }, 'Show and drag the temporary preview, or enter an exact position below. Critical alerts remain upper-center.');
 
     local pos = { math.floor(s.position_x), math.floor(s.position_y) };
     if (imgui.InputInt2('X / Y##warn_position', pos)) then
@@ -3719,18 +3765,21 @@ function render_appearance_tab()
 
     imgui.Separator();
     if (imgui.Button('Test Important')) then
+        warn.ui.warning_preview_visible = false;
         warn.active.name = 'BILGESTORM'; warn.active.text = 'Informational mechanic or useful state change.';
         warn.active.severity = 'important'; warn.active.prediction = 'reactive'; warn.active.duration = s.duration;
         warn.active.startTime = os.clock(); warn.active.firing = true;
     end
     imgui.SameLine();
     if (imgui.Button('Test Danger')) then
+        warn.ui.warning_preview_visible = false;
         warn.active.name = 'GATE OF TARTARUS'; warn.active.text = 'Meaningful damage or positioning risk.';
         warn.active.severity = 'danger'; warn.active.prediction = 'reactive'; warn.active.duration = s.duration;
         warn.active.startTime = os.clock(); warn.active.firing = true;
     end
     imgui.SameLine();
     if (imgui.Button('Test Critical')) then
+        warn.ui.warning_preview_visible = false;
         warn.active.name = 'ZANTETSUKEN'; warn.active.text = 'Lethal area attack.';
         warn.active.severity = 'critical'; warn.active.prediction = 'reactive'; warn.active.duration = s.duration;
         warn.active.startTime = os.clock(); warn.active.firing = true;
