@@ -1,0 +1,19 @@
+# Warn theme files are data only; they never execute Lua code.
+name=Vana'diel Tactical
+window_bg=#071127F6
+panel_bg=#091D3BE8
+panel_alt=#0D2952EB
+field_bg=#050B1AF5
+brass=#D1B064FF
+brass_hover=#F7D67FFF
+brass_dim=#665430FF
+text=#EDEBD9FF
+text_muted=#91A3BDFF
+selected=#183B80F2
+selected_hover=#214FA6FF
+important=#4DAEFFFF
+danger=#FFA62EFF
+critical=#FF3630FF
+success=#6BEA80FF
+rounding=5
+border_size=1

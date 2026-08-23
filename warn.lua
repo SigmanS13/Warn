@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '2.0.0';
+addon.version   = '2.1.0';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -42,6 +42,9 @@ local fonts    = require('fonts');
 local settings = require('settings');
 local chat     = require('chat');
 local ffi      = require('ffi');
+local uiTheme  = require('ui.theme');
+local uiTextures = require('ui.textures');
+local uiPortraits = require('ui.portraits');
 
 local COMMUNITY_MANIFEST_URL = 'https://raw.githubusercontent.com/SigmanS13/Warn/main/community/manifest.json';
 
@@ -68,6 +71,22 @@ local default_settings = T{
         blink_speed     = 4.0,
         duration        = 4.0,          -- seconds the warning stays up once triggered
         template        = '!!! %s !!!',
+        card_opacity    = 0.86,         -- custom warning-card opacity; independent from edge cues
+        card_scale      = 1.0,
+        edge_enabled    = true,
+        edge_intensity  = 0.65,
+        reduced_motion  = false,
+    },
+    ui = T{
+        theme                = 'vana_tactical',
+        scale_preset         = 'auto',  -- auto / 1440p / 1080p / custom
+        custom_scale         = 1.0,
+        launcher_enabled     = true,
+        launcher_position_x  = -1,
+        launcher_position_y  = -1,
+        launcher_size        = 58,
+        controller_enabled   = true,
+        controller_layout    = 'xinput', -- xinput / playstation / switch
     },
     sound = T{
         enabled  = false,
@@ -211,6 +230,22 @@ warn = T{
     encounterGroup = nil,
     customWatchesOpen = T{ false },
     optionsSection = T{ 1 },
+    mainTab = T{ 1 },
+
+    ui = T{
+        theme = nil,
+        launcher_texture = nil,
+        launcher_position_initialized = false,
+        last_launcher_x = nil,
+        last_launcher_y = nil,
+        encounter_category_index = 1,
+        encounter_rule_index = 1,
+        portrait_provider = uiPortraits,
+        launcher_pressed_at = nil,
+        next_launcher_save = nil,
+        launcher_drag_mouse_x = nil,
+        launcher_drag_mouse_y = nil,
+    },
 
     debug = false,
 
@@ -294,6 +329,8 @@ warn = T{
         rule_id = nil,
         sound = nil,
         duration = nil,
+        severity = 'important',
+        prediction = 'reactive',
         startTime = 0,
     },
 
@@ -523,6 +560,49 @@ local function ensure_context_settings()
     if (warn.settings.context.contextual_sounds == nil) then warn.settings.context.contextual_sounds = true; end
     if (warn.settings.context.state_triggers == nil) then warn.settings.context.state_triggers = true; end
     if (warn.settings.context.packet_recognition == nil) then warn.settings.context.packet_recognition = true; end
+end
+
+local function ensure_ui_settings()
+    if (warn.settings.ui == nil) then warn.settings.ui = T{}; end
+    local cfg = warn.settings.ui;
+    if (cfg.theme == nil) then cfg.theme = 'vana_tactical'; end
+    if (cfg.scale_preset == nil) then cfg.scale_preset = 'auto'; end
+    if (cfg.custom_scale == nil) then cfg.custom_scale = 1.0; end
+    if (cfg.launcher_enabled == nil) then cfg.launcher_enabled = true; end
+    if (cfg.launcher_position_x == nil) then cfg.launcher_position_x = -1; end
+    if (cfg.launcher_position_y == nil) then cfg.launcher_position_y = -1; end
+    if (cfg.launcher_size == nil) then cfg.launcher_size = 58; end
+    if (cfg.controller_enabled == nil) then cfg.controller_enabled = true; end
+    if (cfg.controller_layout == nil) then cfg.controller_layout = 'xinput'; end
+
+    if (warn.settings.overlay == nil) then warn.settings.overlay = T{}; end
+    local overlay = warn.settings.overlay;
+    if (overlay.card_opacity == nil) then
+        overlay.card_opacity = math.max(0.0, math.min(1.0, 1.0 - (tonumber(overlay.bg_transparency) or 0.15)));
+    end
+    if (overlay.card_scale == nil) then overlay.card_scale = 1.0; end
+    if (overlay.edge_enabled == nil) then overlay.edge_enabled = true; end
+    if (overlay.edge_intensity == nil) then overlay.edge_intensity = 0.65; end
+    if (overlay.reduced_motion == nil) then overlay.reduced_motion = false; end
+end
+
+local function get_ui_scale()
+    ensure_ui_settings();
+    local cfg = warn.settings.ui;
+    if (cfg.scale_preset == '1440p') then return 1.0; end
+    if (cfg.scale_preset == '1080p') then return 0.75; end
+    if (cfg.scale_preset == 'custom') then
+        return math.max(0.60, math.min(1.75, tonumber(cfg.custom_scale) or 1.0));
+    end
+    local display = imgui.GetIO().DisplaySize;
+    local height = display ~= nil and tonumber(display.y) or 1440;
+    return math.max(0.75, math.min(1.50, height / 1440));
+end
+
+local function reload_ui_theme()
+    ensure_ui_settings();
+    warn.ui.theme = uiTheme.load(addon.path, warn.settings.ui.theme);
+    warn.ui.launcher_texture = uiTextures.load(uiTheme.launcher_path(warn.ui.theme));
 end
 
 local function ensure_responsibility_settings()
@@ -1320,6 +1400,8 @@ local function trigger_context_rule(rule, fallbackName, messageOverride)
     local effectiveSound = resolve_rule_sound(rule);
     warn.active.sound = effectiveSound;
     warn.active.duration = rule.duration;
+    warn.active.severity = tostring(rule.severity or 'important'):lower();
+    warn.active.prediction = tostring(rule.prediction or 'reactive'):lower();
     warn.active.startTime = os.clock();
     warn.active.firing = true;
 
@@ -2026,6 +2108,8 @@ local function flush_debuff_prewarn_batch()
     warn.active.rule_id = '__global_debuff_prewarn__';
     warn.active.sound = resolve_debuff_sound(events[1].definition);
     warn.active.duration = tonumber(warn.settings.debuffs.alert_duration) or warn.settings.overlay.duration;
+    warn.active.severity = 'danger';
+    warn.active.prediction = 'readiness';
     warn.active.startTime = os.clock();
     warn.active.firing = true;
 
@@ -2147,47 +2231,13 @@ local function start_critical_debuff_alert(text, definition)
 end
 
 local function render_critical_debuff_alert()
-    if (warn.criticalFont == nil) then return; end
-
     if (warn.critical.firing and
         (os.clock() - warn.critical.startTime) >= (tonumber(warn.critical.duration) or 4.0)) then
         warn.critical.firing = false;
     end
-
-    if (not warn.critical.firing) then
-        warn.criticalFont:SetVisible(false);
-        return;
-    end
-
-    local text = tostring(warn.critical.text or 'CROWD CONTROL LOST!');
-    warn.criticalFont.font_height = 36;
-    warn.criticalFont.padding = 12;
-    warn.criticalFont.color = 0xFFFFFF00;
-    warn.criticalFont.color_outline = 0xFF000000;
-    warn.criticalFont.background.visible = true;
-    warn.criticalFont.background.color = 0xE0660000;
-    warn.criticalFont:SetText('  ' .. text .. '  ');
-
-    -- Ashita's bundled ItemWatch addon uses imgui.GetIO().DisplaySize for screen-aware
-    -- overlay placement.  Use the same verified v4 pattern to keep this alert centered.
-    local display = imgui.GetIO().DisplaySize;
-    local maxChars = 1;
-    local lineCount = 0;
-    for line in (text .. '\n'):gmatch('(.-)\n') do
-        lineCount = lineCount + 1;
-        if (#line > maxChars) then maxChars = #line; end
-    end
-    local estimatedWidth = math.min(display.x * 0.80, math.max(260, maxChars * 19));
-    local estimatedHeight = math.max(70, lineCount * 48);
-    warn.criticalFont.position_x = math.floor((display.x - estimatedWidth) / 2);
-    warn.criticalFont.position_y = math.floor((display.y - estimatedHeight) / 2);
-
-    local visible = true;
-    if (warn.settings.overlay.blink) then
-        local speed = math.max(0.1, tonumber(warn.settings.overlay.blink_speed) or 4.0);
-        visible = (((os.clock() * speed) % 1.0) < 0.5);
-    end
-    warn.criticalFont:SetVisible(visible);
+    -- The Vana'diel Tactical ImGui layer renders this state with the same severity
+    -- language as encounter alerts. Keep the legacy font hidden for safe migration.
+    if (warn.criticalFont ~= nil) then warn.criticalFont:SetVisible(false); end
 end
 
 local function flush_debuff_loss_batch()
@@ -2263,6 +2313,8 @@ local function flush_debuff_loss_batch()
         warn.active.rule_id = '__global_debuff_loss__';
         warn.active.sound = sound;
         warn.active.duration = tonumber(warn.settings.debuffs.alert_duration) or warn.settings.overlay.duration;
+        warn.active.severity = 'danger';
+        warn.active.prediction = 'reactive';
         warn.active.startTime = os.clock();
         warn.active.firing = true;
 
@@ -3236,6 +3288,8 @@ function trigger_warning(abilityName)
     warn.active.rule_id = nil;
     warn.active.sound = nil;
     warn.active.duration = nil;
+    warn.active.severity = 'important';
+    warn.active.prediction = 'reactive';
     warn.active.startTime = os.clock();
     warn.active.firing = true;
 
@@ -3262,12 +3316,161 @@ function apply_font_appearance()
     warn.font.background.visible = true;
 end
 
-function render_overlay()
-    if (warn.font == nil) then
-        return;
+local function color_with_alpha(color, alpha)
+    color = color or { 1, 1, 1, 1 };
+    return { color[1], color[2], color[3], math.max(0, math.min(1, alpha or color[4] or 1)) };
+end
+
+local function draw_critical_edges(display, severity_color, alpha)
+    local overlay = warn.settings.overlay;
+    if (overlay.edge_enabled ~= true or (tonumber(overlay.edge_intensity) or 0) <= 0) then return; end
+
+    local scale = get_ui_scale();
+    local intensity = math.max(0, math.min(1, tonumber(overlay.edge_intensity) or 0.65));
+    local pulse = 1.0;
+    if (overlay.reduced_motion ~= true) then
+        pulse = 0.84 + 0.16 * math.abs(math.sin(os.clock() * math.pi * 1.35));
+    end
+    local outer = color_with_alpha(severity_color, 0.50 * intensity * pulse * alpha);
+    local clear = color_with_alpha(severity_color, 0);
+    local outer_u32 = imgui.GetColorU32(outer);
+    local clear_u32 = imgui.GetColorU32(clear);
+    local thickness = math.max(28, math.min(display.x, display.y) * 0.075 * scale);
+
+    local flags = bit.bor(ImGuiWindowFlags_NoDecoration, ImGuiWindowFlags_NoMove,
+        ImGuiWindowFlags_NoSavedSettings, ImGuiWindowFlags_NoInputs,
+        ImGuiWindowFlags_NoBackground, ImGuiWindowFlags_NoFocusOnAppearing,
+        ImGuiWindowFlags_NoBringToFrontOnFocus);
+    imgui.SetNextWindowPos({ 0, 0 }, ImGuiCond_Always);
+    imgui.SetNextWindowSize({ display.x, display.y }, ImGuiCond_Always);
+    if (imgui.Begin('##warn_edge_effect', true, flags)) then
+        local draw = imgui.GetWindowDrawList();
+        draw:AddRectFilledMultiColor({ 0, 0 }, { display.x, thickness }, outer_u32, outer_u32, clear_u32, clear_u32);
+        draw:AddRectFilledMultiColor({ 0, display.y - thickness }, { display.x, display.y }, clear_u32, clear_u32, outer_u32, outer_u32);
+        draw:AddRectFilledMultiColor({ 0, 0 }, { thickness, display.y }, outer_u32, clear_u32, clear_u32, outer_u32);
+        draw:AddRectFilledMultiColor({ display.x - thickness, 0 }, { display.x, display.y }, clear_u32, outer_u32, outer_u32, clear_u32);
+    end
+    imgui.End();
+end
+
+local function split_first_line(value)
+    value = tostring(value or '');
+    local first, rest = value:match('^([^\n]*)\n?(.*)$');
+    return first or value, rest or '';
+end
+
+local function render_warning_card(state, is_critical, previewing)
+    ensure_ui_settings();
+    if (warn.ui.theme == nil) then reload_ui_theme(); end
+    local active_theme = warn.ui.theme;
+    local display = imgui.GetIO().DisplaySize;
+    local severity = is_critical and 'critical' or tostring(state.severity or 'important'):lower();
+    if (severity ~= 'critical' and severity ~= 'danger') then severity = 'important'; end
+    local severity_scale = severity == 'critical' and 1.08 or (severity == 'danger' and 1.0 or 0.86);
+    local scale = get_ui_scale() * math.max(0.70, math.min(1.40,
+        tonumber(warn.settings.overlay.card_scale) or 1.0)) * severity_scale;
+    local severity_color = uiTheme.severity_color(active_theme, severity);
+
+    local elapsed = previewing and 1.0 or math.max(0, os.clock() - (tonumber(state.startTime) or os.clock()));
+    local entry_alpha = 1.0;
+    local slide = 0;
+    if (warn.settings.overlay.reduced_motion ~= true and not previewing) then
+        entry_alpha = math.max(0, math.min(1, elapsed / 0.18));
+        slide = (1.0 - entry_alpha) * (-10 * scale);
     end
 
-    -- Expire an active warning once its duration has passed.
+    if (severity == 'critical') then draw_critical_edges(display, severity_color, entry_alpha); end
+
+    local title;
+    local detail;
+    if (is_critical) then
+        title, detail = split_first_line(state.text or 'CROWD CONTROL LOST!');
+    elseif (previewing) then
+        title = 'BILGESTORM';
+        detail = 'Preview - mechanic detail or assigned action appears here.';
+    else
+        title = tostring(state.name or 'WARNING');
+        detail = tostring(state.text or '');
+        if (detail == title) then detail = ''; end
+    end
+    title = tostring(title or 'WARNING'):upper();
+
+    local width = math.min(display.x * 0.56, math.max(360 * scale, 540 * scale));
+    local detail_lines = 0;
+    for _ in (detail .. '\n'):gmatch('(.-)\n') do detail_lines = detail_lines + 1; end
+    if (detail == '') then detail_lines = 0; end
+    local height = (detail_lines > 0 and (118 + math.max(0, detail_lines - 1) * 18) or 88) * scale;
+    local x = tonumber(warn.settings.overlay.position_x) or math.floor((display.x - width) / 2);
+    local y = tonumber(warn.settings.overlay.position_y) or math.floor(display.y * 0.24);
+    if (severity == 'critical') then
+        x = math.floor((display.x - width) / 2);
+        y = math.floor(display.y * 0.27);
+    end
+    y = y + slide;
+
+    local flags = bit.bor(ImGuiWindowFlags_NoDecoration, ImGuiWindowFlags_NoResize,
+        ImGuiWindowFlags_NoScrollbar, ImGuiWindowFlags_NoSavedSettings,
+        ImGuiWindowFlags_NoBackground, ImGuiWindowFlags_NoFocusOnAppearing);
+    if (not previewing) then flags = bit.bor(flags, ImGuiWindowFlags_NoMove, ImGuiWindowFlags_NoInputs); end
+    imgui.SetNextWindowPos({ x, y }, previewing and ImGuiCond_Once or ImGuiCond_Always);
+    imgui.SetNextWindowSize({ width, height }, ImGuiCond_Always);
+
+    if (imgui.Begin('##warn_live_card', true, flags)) then
+        local win_x, win_y = imgui.GetWindowPos();
+        local draw = imgui.GetWindowDrawList();
+        local card_opacity = math.max(0.0, math.min(1.0, tonumber(warn.settings.overlay.card_opacity) or 0.86));
+        local urgency_pulse = 1.0;
+        if (severity == 'danger' and warn.settings.overlay.reduced_motion ~= true) then
+            urgency_pulse = 0.72 + 0.28 * math.abs(math.sin(os.clock() * math.pi * 1.10));
+        end
+        local bg = color_with_alpha(active_theme.window_bg, card_opacity * entry_alpha);
+        local panel = color_with_alpha(active_theme.panel_alt, math.min(1, card_opacity * 1.08) * entry_alpha);
+        local brass = color_with_alpha(active_theme.brass, 0.90 * entry_alpha);
+        local accent = color_with_alpha(severity_color, 0.95 * entry_alpha * urgency_pulse);
+
+        draw:AddRectFilled({ win_x, win_y }, { win_x + width, win_y + height }, imgui.GetColorU32(bg), 5 * scale);
+        draw:AddRectFilled({ win_x + 1 * scale, win_y + 1 * scale }, { win_x + width - 1 * scale, win_y + 31 * scale }, imgui.GetColorU32(panel), 5 * scale);
+        draw:AddRect({ win_x, win_y }, { win_x + width, win_y + height },
+            imgui.GetColorU32(severity == 'danger' and accent or brass), 5 * scale, 0,
+            math.max(1, scale * (severity == 'critical' and 1.5 or 1.0)));
+        draw:AddRectFilled({ win_x, win_y }, { win_x + 5 * scale, win_y + height }, imgui.GetColorU32(accent), 4 * scale);
+        draw:AddLine({ win_x + 18 * scale, win_y + 31 * scale }, { win_x + width - 18 * scale, win_y + 31 * scale }, imgui.GetColorU32(color_with_alpha(active_theme.brass_dim, entry_alpha)), math.max(1, scale));
+
+        imgui.SetCursorScreenPos({ win_x + 18 * scale, win_y + 8 * scale });
+        imgui.SetWindowFontScale(0.82 * scale);
+        imgui.TextColored(color_with_alpha(severity_color, entry_alpha), severity:upper());
+        local prediction = tostring(state.prediction or 'reactive');
+        imgui.SameLine();
+        imgui.TextColored(color_with_alpha(active_theme.text_muted, entry_alpha), prediction == 'readiness' and '  READINESS ESTIMATE' or '  REACTIVE');
+
+        imgui.SetCursorScreenPos({ win_x + 22 * scale, win_y + 40 * scale });
+        imgui.SetWindowFontScale(1.28 * scale);
+        imgui.TextColored(color_with_alpha(active_theme.text, entry_alpha), title);
+        if (detail ~= '') then
+            imgui.SetCursorScreenPos({ win_x + 22 * scale, win_y + 72 * scale });
+            imgui.SetWindowFontScale(0.86 * scale);
+            imgui.PushTextWrapPos(win_x + width - 22 * scale);
+            imgui.TextWrapped(detail);
+            imgui.PopTextWrapPos();
+        end
+        imgui.SetWindowFontScale(1.0);
+
+        if (previewing) then
+            local moved_x, moved_y = imgui.GetWindowPos();
+            moved_x = math.floor(moved_x); moved_y = math.floor(moved_y);
+            if (moved_x ~= math.floor(warn.settings.overlay.position_x) or moved_y ~= math.floor(warn.settings.overlay.position_y)) then
+                warn.settings.overlay.position_x = moved_x;
+                warn.settings.overlay.position_y = moved_y;
+                warn.ui.next_position_save = os.clock() + 0.35;
+            end
+        end
+    end
+    imgui.End();
+end
+
+function render_overlay()
+    ensure_ui_settings();
+    if (warn.font ~= nil) then warn.font:SetVisible(false); end
     if (warn.active.firing) then
         local duration = warn.active.duration or warn.settings.overlay.duration;
         if ((os.clock() - warn.active.startTime) >= duration) then
@@ -3275,36 +3478,18 @@ function render_overlay()
         end
     end
 
-    local previewing = warn.isGuiOpen[1] and not warn.active.firing;
-    local showing = warn.active.firing or previewing;
-
-    if (not showing) then
-        warn.font:SetVisible(false);
-        return;
+    if (warn.critical.firing) then
+        render_warning_card(warn.critical, true, false);
+    elseif (warn.active.firing) then
+        render_warning_card(warn.active, false, false);
+    elseif (warn.isGuiOpen[1] and warn.mainTab[1] == 2 and warn.optionsSection[1] == 6) then
+        render_warning_card({ severity = 'important', prediction = 'reactive', startTime = os.clock() }, false, true);
     end
 
-    apply_font_appearance();
-
-    local label;
-    if (warn.active.firing) then
-        if (warn.active.text ~= nil and warn.active.text ~= '') then
-            label = warn.active.text;
-        else
-            label = safe_format(warn.settings.overlay.template, warn.active.name:upper());
-        end
-    else
-        label = 'PREVIEW - ' .. safe_format(warn.settings.overlay.template, 'BILGESTORM');
+    if (warn.ui.next_position_save ~= nil and os.clock() >= warn.ui.next_position_save) then
+        warn.ui.next_position_save = nil;
+        save_settings();
     end
-
-    warn.font:SetText(' ' .. label .. ' ');
-
-    local visible = true;
-    if (warn.settings.overlay.blink) then
-        local speed = math.max(0.1, warn.settings.overlay.blink_speed);
-        local cyclePos = (os.clock() * speed) % 1.0;
-        visible = cyclePos < 0.5;
-    end
-    warn.font:SetVisible(visible);
 end
 
 --------------------------------------------------------------------------------------------------
@@ -3388,74 +3573,112 @@ end
 --------------------------------------------------------------------------------------------------
 
 function render_appearance_tab()
+    ensure_ui_settings();
     local s = warn.settings.overlay;
+    local ui = warn.settings.ui;
 
-    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Warning Text (use %s for the ability name)');
-    if (imgui.InputText('##warn_template', warn.templateBuf, 128)) then
-        s.template = warn.templateBuf[1];
-        save_settings();
-    end
-
-    imgui.Separator();
-    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Text Size');
-    local sizeT = { s.size };
-    if (imgui.SliderFloat('##warn_size', sizeT, 0.5, 6.0, '%.1f')) then
-        s.size = sizeT[1];
-        save_settings();
-    end
-
-    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Text Color');
-    local tc = argb_to_rgba_floats(s.text_color);
-    if (imgui.ColorEdit4('##warn_textcolor', tc)) then
-        s.text_color = rgba_floats_to_argb(tc, 255);
-        save_settings();
-    end
-
-    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Outline Color');
-    local oc = argb_to_rgba_floats(s.outline_color);
-    if (imgui.ColorEdit4('##warn_outlinecolor', oc)) then
-        s.outline_color = rgba_floats_to_argb(oc, 255);
-        save_settings();
-    end
-
-    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Background Color');
-    local bc = argb_to_rgba_floats(s.bg_color);
-    if (imgui.ColorEdit4('##warn_bgcolor', bc)) then
-        s.bg_color = rgba_floats_to_argb(bc, 255);
-        save_settings();
-    end
-
-    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Background Transparency');
-    local bt = { s.bg_transparency };
-    if (imgui.SliderFloat('##warn_bgtrans', bt, 0.0, 1.0, '%.2f')) then
-        s.bg_transparency = bt[1];
-        save_settings();
-    end
-
+    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Vana\'diel Tactical Interface');
+    imgui.TextColored({ 0.70, 0.78, 0.88, 1.0 },
+        'Warn keeps alert readability separate from decorative effects so neither has to obstruct the fight.');
     imgui.Separator();
 
-    if (imgui.Checkbox('Blink', { s.blink })) then
-        s.blink = not s.blink;
+    local preset_values = { 'auto', '1440p', '1080p', 'custom' };
+    local preset_labels = 'Auto (Display Height)\0001440p Baseline\0001080p Baseline\000Custom\000\000';
+    local preset_index = 0;
+    for index, value in ipairs(preset_values) do if (ui.scale_preset == value) then preset_index = index - 1; end end
+    local preset_selected = { preset_index };
+    if (imgui.Combo('Interface Scale##warn_scale_preset', preset_selected, preset_labels)) then
+        ui.scale_preset = preset_values[preset_selected[1] + 1] or 'auto';
+        warn.guiSizeInitialized = false;
         save_settings();
     end
+    if (ui.scale_preset == 'custom') then
+        local custom_scale = { tonumber(ui.custom_scale) or 1.0 };
+        if (imgui.SliderFloat('Custom Interface Scale', custom_scale, 0.60, 1.75, '%.2f')) then
+            ui.custom_scale = custom_scale[1];
+            warn.guiSizeInitialized = false;
+            save_settings();
+        end
+    end
+    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 }, string.format('Resolved scale: %.2fx', get_ui_scale()));
 
-    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Blink Speed');
-    local bs = { s.blink_speed };
-    if (imgui.SliderFloat('##warn_blinkspeed', bs, 0.5, 10.0, '%.1f')) then
-        s.blink_speed = bs[1];
+    local themes = uiTheme.list(addon.path);
+    local theme_index = 0;
+    for index, value in ipairs(themes) do if (value == ui.theme) then theme_index = index - 1; end end
+    local theme_selected = { theme_index };
+    local theme_labels = table.concat(themes, '\000') .. '\000\000';
+    if (#themes > 0 and imgui.Combo('Theme##warn_theme', theme_selected, theme_labels)) then
+        ui.theme = themes[theme_selected[1] + 1] or 'vana_tactical';
+        reload_ui_theme();
         save_settings();
     end
+    imgui.SameLine();
+    if (imgui.Button('Reload Theme')) then
+        uiTextures.clear();
+        reload_ui_theme();
+    end
+    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 },
+        'Community themes can override theme.txt and launcher.png under config/addons/warn/themes/<name>.');
 
-    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Warning Duration (seconds)');
+    imgui.Separator();
+    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Launcher');
+    if (imgui.Checkbox('Show Draggable W Launcher', { ui.launcher_enabled })) then
+        ui.launcher_enabled = not ui.launcher_enabled;
+        save_settings();
+    end
+    local launcher_size = { tonumber(ui.launcher_size) or 58 };
+    if (imgui.SliderFloat('Launcher Size', launcher_size, 36, 96, '%.0f px')) then
+        ui.launcher_size = launcher_size[1];
+        save_settings();
+    end
+    if (imgui.Button('Reset Launcher Position')) then
+        ui.launcher_position_x = -1;
+        ui.launcher_position_y = -1;
+        warn.ui.launcher_position_initialized = false;
+        save_settings();
+    end
+    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 }, 'Hold Ctrl while dragging the launcher. Click it normally to open or close Warn.');
+
+    imgui.Separator();
+    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Live Warning Cards');
+    local card_opacity = { tonumber(s.card_opacity) or 0.86 };
+    if (imgui.SliderFloat('Warning Card Opacity', card_opacity, 0.0, 1.0, '%.2f')) then
+        s.card_opacity = card_opacity[1];
+        save_settings();
+    end
+    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 },
+        'Changes only the message panel. Text and critical edge awareness remain readable.');
+
+    local card_scale = { tonumber(s.card_scale) or 1.0 };
+    if (imgui.SliderFloat('Warning Card Scale', card_scale, 0.70, 1.40, '%.2f')) then
+        s.card_scale = card_scale[1];
+        save_settings();
+    end
+    if (imgui.Checkbox('Enable Critical Screen-Edge Effect', { s.edge_enabled })) then
+        s.edge_enabled = not s.edge_enabled;
+        save_settings();
+    end
+    if (s.edge_enabled) then
+        local edge_intensity = { tonumber(s.edge_intensity) or 0.65 };
+        if (imgui.SliderFloat('Edge Effect Intensity', edge_intensity, 0.0, 1.0, '%.2f')) then
+            s.edge_intensity = edge_intensity[1];
+            save_settings();
+        end
+    end
+    if (imgui.Checkbox('Reduced Motion', { s.reduced_motion })) then
+        s.reduced_motion = not s.reduced_motion;
+        save_settings();
+    end
+    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 }, 'Reduced Motion removes entry slides and critical-edge pulsing.');
+
     local dur = { s.duration };
-    if (imgui.SliderFloat('##warn_duration', dur, 1.0, 15.0, '%.1f')) then
+    if (imgui.SliderFloat('Warning Duration', dur, 1.0, 15.0, '%.1f sec')) then
         s.duration = dur[1];
         save_settings();
     end
 
-    imgui.Separator();
-    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Position');
-    imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 }, 'Tip: you can also drag the warning box on screen to reposition it.');
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Warning Position');
+    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 }, 'Drag the live preview, or enter an exact position below. Critical alerts remain upper-center.');
 
     local pos = { math.floor(s.position_x), math.floor(s.position_y) };
     if (imgui.InputInt2('X / Y##warn_position', pos)) then
@@ -3467,7 +3690,41 @@ function render_appearance_tab()
     end
 
     imgui.Separator();
-    imgui.TextColored({ 0.6, 1.0, 0.6, 1.0 }, 'The box shown while this window is open is a live preview.');
+    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Controller Navigation');
+    if (imgui.Checkbox('Enable Controller Navigation', { ui.controller_enabled })) then
+        ui.controller_enabled = not ui.controller_enabled;
+        save_settings();
+    end
+    local controller_values = { 'xinput', 'playstation', 'switch' };
+    local controller_labels = 'Xbox / XInput\000PlayStation / DirectInput\000Switch Pro / DirectInput\000\000';
+    local controller_index = 0;
+    for index, value in ipairs(controller_values) do if (ui.controller_layout == value) then controller_index = index - 1; end end
+    local controller_selected = { controller_index };
+    if (imgui.Combo('Controller Layout', controller_selected, controller_labels)) then
+        ui.controller_layout = controller_values[controller_selected[1] + 1] or 'xinput';
+        save_settings();
+    end
+    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 },
+        'Shoulders switch Encounters/Options. D-pad changes the active browser or option selection. Back closes Warn.');
+
+    imgui.Separator();
+    if (imgui.Button('Test Important')) then
+        warn.active.name = 'BILGESTORM'; warn.active.text = 'Informational mechanic or useful state change.';
+        warn.active.severity = 'important'; warn.active.prediction = 'reactive'; warn.active.duration = s.duration;
+        warn.active.startTime = os.clock(); warn.active.firing = true;
+    end
+    imgui.SameLine();
+    if (imgui.Button('Test Danger')) then
+        warn.active.name = 'GATE OF TARTARUS'; warn.active.text = 'Meaningful damage or positioning risk.';
+        warn.active.severity = 'danger'; warn.active.prediction = 'reactive'; warn.active.duration = s.duration;
+        warn.active.startTime = os.clock(); warn.active.firing = true;
+    end
+    imgui.SameLine();
+    if (imgui.Button('Test Critical')) then
+        warn.active.name = 'ZANTETSUKEN'; warn.active.text = 'Lethal area attack.';
+        warn.active.severity = 'critical'; warn.active.prediction = 'reactive'; warn.active.duration = s.duration;
+        warn.active.startTime = os.clock(); warn.active.firing = true;
+    end
 end
 
 --------------------------------------------------------------------------------------------------
@@ -4264,6 +4521,88 @@ end
 -- GUI: main window
 --------------------------------------------------------------------------------------------------
 
+local function render_launcher()
+    ensure_ui_settings();
+    local ui = warn.settings.ui;
+    if (ui.launcher_enabled ~= true) then return; end
+    if (warn.ui.theme == nil) then reload_ui_theme(); end
+
+    local scale = get_ui_scale();
+    local size = math.max(36, math.min(96, tonumber(ui.launcher_size) or 58)) * scale;
+    local display = imgui.GetIO().DisplaySize;
+    if (warn.ui.launcher_position_initialized ~= true) then
+        if ((tonumber(ui.launcher_position_x) or -1) < 0 or (tonumber(ui.launcher_position_y) or -1) < 0) then
+            ui.launcher_position_x = 34 * scale;
+            ui.launcher_position_y = math.max(20, display.y - size - (54 * scale));
+        end
+        warn.ui.launcher_position_initialized = true;
+    end
+
+    local io = imgui.GetIO();
+    local ctrl_down = io.KeyCtrl == true;
+    local flags = bit.bor(ImGuiWindowFlags_NoDecoration, ImGuiWindowFlags_NoResize,
+        ImGuiWindowFlags_NoScrollbar, ImGuiWindowFlags_NoSavedSettings,
+        ImGuiWindowFlags_NoBackground, ImGuiWindowFlags_NoFocusOnAppearing,
+        ImGuiWindowFlags_NoBringToFrontOnFocus, ImGuiWindowFlags_NoMove);
+
+    imgui.SetNextWindowPos({ ui.launcher_position_x, ui.launcher_position_y }, ImGuiCond_Always);
+    imgui.SetNextWindowSize({ size, size }, ImGuiCond_Always);
+    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, { 0, 0 });
+    if (imgui.Begin('##warn_launcher', true, flags)) then
+        local pointer = uiTextures.pointer(warn.ui.launcher_texture);
+        if (pointer ~= nil) then
+            imgui.Image(pointer, { size, size }, { 0, 0 }, { 1, 1 });
+        else
+            imgui.InvisibleButton('##warn_launcher_fallback', { size, size });
+            local p_x, p_y = imgui.GetWindowPos();
+            local draw = imgui.GetWindowDrawList();
+            draw:AddCircleFilled({ p_x + size / 2, p_y + size / 2 }, size * 0.46,
+                imgui.GetColorU32(warn.ui.theme.panel_bg), 48);
+            draw:AddCircle({ p_x + size / 2, p_y + size / 2 }, size * 0.43,
+                imgui.GetColorU32(warn.ui.theme.brass), 48, math.max(2, scale * 2));
+            draw:AddText({ p_x + size * 0.31, p_y + size * 0.23 },
+                imgui.GetColorU32(warn.ui.theme.brass_hover), 'W');
+        end
+
+        if (imgui.IsItemHovered() and imgui.IsMouseReleased(0) and not ctrl_down) then
+            local drag_x, drag_y = imgui.GetMouseDragDelta(0, 0);
+            local dragged = (math.abs(tonumber(drag_x) or 0) + math.abs(tonumber(drag_y) or 0)) > 4;
+            if (not dragged) then
+                warn.isGuiOpen[1] = not warn.isGuiOpen[1];
+                if (warn.isGuiOpen[1]) then refresh_sound_files(false); end
+            end
+        end
+
+        if (ctrl_down and (imgui.IsItemHovered() or imgui.IsItemActive()) and imgui.IsMouseDown(0)) then
+            local mouse_x, mouse_y = imgui.GetMousePos();
+            if (warn.ui.launcher_drag_mouse_x ~= nil and warn.ui.launcher_drag_mouse_y ~= nil) then
+                ui.launcher_position_x = math.max(0, math.min(display.x - size,
+                    ui.launcher_position_x + mouse_x - warn.ui.launcher_drag_mouse_x));
+                ui.launcher_position_y = math.max(0, math.min(display.y - size,
+                    ui.launcher_position_y + mouse_y - warn.ui.launcher_drag_mouse_y));
+                warn.ui.next_launcher_save = os.clock() + 0.35;
+            end
+            warn.ui.launcher_drag_mouse_x = mouse_x;
+            warn.ui.launcher_drag_mouse_y = mouse_y;
+        else
+            warn.ui.launcher_drag_mouse_x = nil;
+            warn.ui.launcher_drag_mouse_y = nil;
+        end
+
+        local x, y = imgui.GetWindowPos();
+        x = math.floor(x); y = math.floor(y);
+        warn.ui.last_launcher_x = x;
+        warn.ui.last_launcher_y = y;
+    end
+    imgui.End();
+    imgui.PopStyleVar();
+
+    if (warn.ui.next_launcher_save ~= nil and os.clock() >= warn.ui.next_launcher_save) then
+        warn.ui.next_launcher_save = nil;
+        save_settings();
+    end
+end
+
 function render_config_window()
     if (not warn.isGuiOpen[1]) then
         return;
@@ -4271,28 +4610,142 @@ function render_config_window()
 
     queue_automatic_community_check();
 
+    ensure_ui_settings();
+    if (warn.ui.theme == nil) then reload_ui_theme(); end
+    local scale = get_ui_scale();
     if (not warn.guiSizeInitialized) then
-        imgui.SetNextWindowSize({ 860, 760, });
+        imgui.SetNextWindowSize({ 1160 * scale, 820 * scale, });
         warn.guiSizeInitialized = true;
     end
-    imgui.SetNextWindowSizeConstraints({ 720, 620, }, { FLT_MAX, FLT_MAX, });
-    if (imgui.Begin('Warn', warn.isGuiOpen, 0)) then
-        if (imgui.BeginTabBar('##warn_tabbar', ImGuiTabBarFlags_NoCloseWithMiddleMouseButton)) then
+    imgui.SetNextWindowSizeConstraints({ 720 * scale, 600 * scale, }, { FLT_MAX, FLT_MAX, });
+    uiTheme.push(warn.ui.theme, scale);
+    local flags = bit.bor(ImGuiWindowFlags_NoTitleBar, ImGuiWindowFlags_NoCollapse);
+    if (imgui.Begin('WARN##warn_dashboard', warn.isGuiOpen, flags)) then
+        local window_x, window_y = imgui.GetWindowPos();
+        local window_width, window_height = imgui.GetWindowSize();
+        local draw = imgui.GetWindowDrawList();
+        local brass = imgui.GetColorU32(warn.ui.theme.brass);
+        local dim = imgui.GetColorU32(warn.ui.theme.brass_dim);
+        local corner = 17 * scale;
+        draw:AddRect({ window_x, window_y }, { window_x + window_width, window_y + window_height },
+            brass, warn.ui.theme.rounding * scale, 0, math.max(1, warn.ui.theme.border_size * scale));
+        draw:AddLine({ window_x + 7 * scale, window_y + corner },
+            { window_x + 7 * scale, window_y + 7 * scale }, dim, 2 * scale);
+        draw:AddLine({ window_x + 7 * scale, window_y + 7 * scale },
+            { window_x + corner, window_y + 7 * scale }, dim, 2 * scale);
+        draw:AddLine({ window_x + window_width - corner, window_y + 7 * scale },
+            { window_x + window_width - 7 * scale, window_y + 7 * scale }, dim, 2 * scale);
+        draw:AddLine({ window_x + window_width - 7 * scale, window_y + 7 * scale },
+            { window_x + window_width - 7 * scale, window_y + corner }, dim, 2 * scale);
 
-            if (imgui.BeginTabItem('Encounters', nil)) then
-                render_context_tab();
-                imgui.EndTabItem();
-            end
+        local pointer = uiTextures.pointer(warn.ui.launcher_texture);
+        if (pointer ~= nil) then
+            imgui.Image(pointer, { 44 * scale, 44 * scale }, { 0, 0 }, { 1, 1 });
+            imgui.SameLine();
+        end
+        imgui.BeginGroup();
+        imgui.SetWindowFontScale(1.28 * scale);
+        imgui.TextColored(warn.ui.theme.brass_hover, 'WARN');
+        imgui.SetWindowFontScale(0.82 * scale);
+        imgui.TextColored(warn.ui.theme.text_muted, 'VANA\'DIEL TACTICAL ENCOUNTER ASSISTANT');
+        imgui.SetWindowFontScale(1.0);
+        imgui.EndGroup();
+        imgui.SameLine();
+        imgui.SetCursorPosX(math.max(imgui.GetCursorPosX(), window_width - 45 * scale));
+        if (imgui.Button('X##warn_close', { 28 * scale, 28 * scale })) then warn.isGuiOpen[1] = false; end
 
-            if (imgui.BeginTabItem('Options', nil)) then
-                render_options_tab();
-                imgui.EndTabItem();
-            end
+        imgui.Separator();
+        local tab_width = 172 * scale;
+        if (warn.mainTab[1] == 1) then imgui.PushStyleColor(ImGuiCol_Button, warn.ui.theme.selected); end
+        if (imgui.Button('ENCOUNTERS##warn_main_encounters', { tab_width, 34 * scale })) then warn.mainTab[1] = 1; end
+        if (warn.mainTab[1] == 1) then imgui.PopStyleColor(); end
+        imgui.SameLine();
+        if (warn.mainTab[1] == 2) then imgui.PushStyleColor(ImGuiCol_Button, warn.ui.theme.selected); end
+        if (imgui.Button('OPTIONS##warn_main_options', { tab_width, 34 * scale })) then warn.mainTab[1] = 2; end
+        if (warn.mainTab[1] == 2) then imgui.PopStyleColor(); end
+        imgui.SameLine();
+        imgui.TextColored(warn.ui.theme.text_muted,
+            warn.mainTab[1] == 1 and '  Verified encounter intelligence and custom watches'
+                or '  Responsibilities, learning, alerts, appearance, and sound');
+        imgui.Separator();
 
-            imgui.EndTabBar();
+        imgui.BeginChild('warn_main_content', { 0, -28 * scale }, 0);
+        if (warn.mainTab[1] == 1) then render_context_tab(); else render_options_tab(); end
+        imgui.EndChild();
+        imgui.Separator();
+        if (warn.settings.ui.controller_enabled) then
+            imgui.TextColored(warn.ui.theme.text_muted,
+                'Controller: LB/RB tabs   D-pad navigate   B/Circle close');
+        else
+            imgui.TextColored(warn.ui.theme.text_muted,
+                'Tip: use the W launcher to reopen Warn. Hold Ctrl to drag it.');
         end
     end
     imgui.End();
+    uiTheme.pop();
+end
+
+local function controller_visible_rules()
+    local result = {};
+    for _, rule in ipairs(get_all_context_rules()) do
+        if (rule.verified == true) then
+            local content = tostring(rule.content or 'Other');
+            local group = get_rule_group(rule);
+            if (warn.encounterContent == nil or content == warn.encounterContent) and
+               (warn.encounterGroup == nil or group == warn.encounterGroup) then
+                table.insert(result, rule);
+            end
+        end
+    end
+    table.sort(result, function (a, b) return get_rule_display_name(a):lower() < get_rule_display_name(b):lower(); end);
+    return result;
+end
+
+local function controller_move_category(delta)
+    local choices = { { content = nil, group = nil } };
+    for _, category in ipairs(get_encounter_categories()) do
+        table.insert(choices, { content = category.content, group = nil });
+        for _, group in ipairs(category.groups) do
+            table.insert(choices, { content = category.content, group = group });
+        end
+    end
+    local count = #choices;
+    if (count == 0) then return; end
+    warn.ui.encounter_category_index = ((warn.ui.encounter_category_index - 1 + delta) % count) + 1;
+    local selected = choices[warn.ui.encounter_category_index];
+    warn.encounterContent = selected.content;
+    warn.encounterGroup = selected.group;
+    warn.ui.encounter_rule_index = 1;
+    local rules = controller_visible_rules();
+    warn.selectedRuleId = rules[1] and rules[1].id or nil;
+end
+
+local function controller_move_rule(delta)
+    local rules = controller_visible_rules();
+    if (#rules == 0) then return; end
+    warn.ui.encounter_rule_index = ((warn.ui.encounter_rule_index - 1 + delta) % #rules) + 1;
+    warn.selectedRuleId = rules[warn.ui.encounter_rule_index].id;
+end
+
+local function handle_controller_action(action)
+    if (warn.settings == nil or warn.isGuiOpen[1] ~= true) then return false; end
+    ensure_ui_settings();
+    if (warn.settings.ui.controller_enabled ~= true) then return false; end
+    if (action == 'tab_left' or action == 'tab_right') then
+        warn.mainTab[1] = warn.mainTab[1] == 1 and 2 or 1;
+    elseif (action == 'up' or action == 'down') then
+        local delta = action == 'up' and -1 or 1;
+        if (warn.mainTab[1] == 1) then controller_move_category(delta);
+        else warn.optionsSection[1] = ((warn.optionsSection[1] - 1 + delta) % 7) + 1; end
+    elseif (action == 'left' or action == 'right') then
+        if (warn.mainTab[1] == 1) then controller_move_rule(action == 'left' and -1 or 1);
+        else return false; end
+    elseif (action == 'close') then
+        warn.isGuiOpen[1] = false;
+    else
+        return false;
+    end
+    return true;
 end
 
 --------------------------------------------------------------------------------------------------
@@ -4305,11 +4758,13 @@ ashita.events.register('load', 'load_cb', function ()
     warn.ruleSettings = settings.load(default_rule_settings, 'warn_rule_settings');
     warn.learningData = settings.load(default_learning_data, 'warn_learning');
     ensure_context_settings();
+    ensure_ui_settings();
     ensure_responsibility_settings();
     ensure_learning_settings();
     ensure_community_settings();
     ensure_debuff_settings();
     ensure_rule_settings();
+    reload_ui_theme();
 
     warn.templateBuf = T{ warn.settings.overlay.template };
 
@@ -4383,6 +4838,37 @@ ashita.events.register('unload', 'unload_cb', function ()
         warn.criticalFont:destroy();
         warn.criticalFont = nil;
     end
+    uiTextures.clear();
+end);
+
+ashita.events.register('xinput_button', 'warn_xinput_button_cb', function (e)
+    if (e == nil or e.injected == true or tonumber(e.state) ~= 1) then return; end
+    local actions = {
+        [0] = 'up', [1] = 'down', [2] = 'left', [3] = 'right',
+        [5] = 'close', [8] = 'tab_left', [9] = 'tab_right', [13] = 'close',
+    };
+    local action = actions[tonumber(e.button)];
+    if (action ~= nil and handle_controller_action(action)) then e.blocked = true; end
+end);
+
+ashita.events.register('dinput_button', 'warn_dinput_button_cb', function (e)
+    if (e == nil or e.injected == true or warn.settings == nil or warn.isGuiOpen[1] ~= true) then return; end
+    ensure_ui_settings();
+    if (warn.settings.ui.controller_enabled ~= true or warn.settings.ui.controller_layout == 'xinput') then return; end
+    local button = tonumber(e.button);
+    local state = tonumber(e.state);
+    local action = nil;
+    if (button == 32) then
+        local directions = { [0] = 'up', [9000] = 'right', [18000] = 'down', [27000] = 'left' };
+        action = directions[state];
+    elseif (state == 128 or state == 1) then
+        if (button == 52) then action = 'tab_left';
+        elseif (button == 53) then action = 'tab_right';
+        elseif (warn.settings.ui.controller_layout == 'playstation' and button == 50) then action = 'close';
+        elseif (warn.settings.ui.controller_layout == 'switch' and button == 49) then action = 'close';
+        end
+    end
+    if (action ~= nil and handle_controller_action(action)) then e.blocked = true; end
 end);
 
 ashita.events.register('command', 'command_cb', function (e)
@@ -4731,6 +5217,8 @@ ashita.events.register('command', 'command_cb', function (e)
         warn.active.rule_id = nil;
         warn.active.sound = nil;
         warn.active.duration = nil;
+        warn.active.severity = 'important';
+        warn.active.prediction = 'reactive';
         warn.active.startTime = os.clock();
         warn.active.firing = true;
 
@@ -4840,20 +5328,6 @@ ashita.events.register('packet_in', 'packet_in_cb', function (e)
 end);
 
 ashita.events.register('d3d_present', 'present_cb', function ()
-    -- If the user dragged the overlay on screen, persist the new position.
-    if (warn.font ~= nil and warn.settings ~= nil) then
-        local x = math.floor(warn.font.position_x);
-        local y = math.floor(warn.font.position_y);
-        local sx = math.floor(warn.settings.overlay.position_x);
-        local sy = math.floor(warn.settings.overlay.position_y);
-
-        if (x ~= sx or y ~= sy) then
-            warn.settings.overlay.position_x = x;
-            warn.settings.overlay.position_y = y;
-            save_settings();
-        end
-    end
-
     update_debuff_mob_cache(false);
     update_state_rules();
     process_debuff_estimates();
@@ -4861,6 +5335,7 @@ ashita.events.register('d3d_present', 'present_cb', function ()
     flush_debuff_loss_batch();
     save_pending_learning_data();
     process_community_requests();
+    render_launcher();
     render_config_window();
     render_overlay();
     render_critical_debuff_alert();

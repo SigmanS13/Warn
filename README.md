@@ -42,6 +42,14 @@ warn/
       COVERAGE.md
   sounds/
     *.wav
+  themes/
+    vana_tactical/
+      theme.txt
+      launcher.png
+  ui/
+    theme.lua
+    textures.lua
+    portraits.lua
   community/
     manifest.json
     database.json
@@ -60,6 +68,27 @@ The GUI has two top-level areas:
 - **Options** — Responsibilities, Learning, Database, Debuffs, Alerts, Appearance, and Sound
 
 The default configuration is intended to work without setup; advanced customization is optional.
+
+## Interface and live alerts
+
+Warn ships with a Vana'diel tactical interface: deep indigo panels, brass details, engraved
+corner accents, and a small **W** launcher. Click the launcher to open or close Warn; hold
+Ctrl while dragging it to reposition it. It can be resized, reset, or hidden under
+**Options → Appearance**.
+
+The interface can scale automatically from display height, or use explicit **1440p**,
+**1080p**, and custom scale presets. Controller navigation is available while Warn is open:
+shoulder buttons switch **Encounters / Options**, the D-pad navigates the current area, and
+the layout-specific back button closes the dashboard. These controls are only consumed while
+the dashboard is open.
+
+Live messages use three visual levels: **Important**, **Danger**, and **Critical**. The warning
+card's background opacity is independently adjustable under **Options → Appearance**; lowering
+it does not dim the alert text or the critical screen-edge cue. Card size, edge intensity,
+duration, and Reduced Motion are configurable separately, with test buttons for every level.
+
+Advanced theme overrides are data-only. A custom `theme.txt` and optional `launcher.png` can
+be placed in `Ashita/config/addons/warn/themes/<name>/`; theme files cannot execute Lua.
 
 ## Main commands
 

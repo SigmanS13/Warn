@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.1.0
+- Replaced the stock configuration shell with a custom Vana'diel tactical dashboard using deep indigo panels, brass detailing, engraved corner accents, and two primary **Encounters / Options** controls.
+- Added a cleaned transparent brass-and-indigo **W** medallion as a clickable, draggable, and hideable launcher.
+- Added automatic display scaling plus explicit 1440p, 1080p, and custom interface-scale presets.
+- Rebuilt live alerts as severity-aware cards for **Important**, **Danger**, and **Critical** mechanics.
+- Added independently configurable warning-card opacity so message backgrounds can be reduced without dimming text or critical edge cues.
+- Added an optional critical screen-edge illumination effect with a separate intensity control.
+- Added Reduced Motion, warning-card scale, and draggable live-preview controls.
+- Added scoped controller navigation for the dashboard: shoulder buttons change the primary area, D-pad navigation browses the current area, and the layout-specific back button closes Warn.
+- Added a data-only community theme override path for palette and launcher customization without executing third-party Lua.
+- Added an inactive portrait-provider seam for a future encounter-art update; no empty portrait space or runtime downloading is introduced now.
+
 ## 2.0.0
 - Redesigned the GUI around two top-level areas: **Encounters** and **Options**.
 - Added a metadata-driven encounter browser whose categories come from content/group/encounter data rather than Lua filenames.
