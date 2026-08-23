@@ -24,7 +24,11 @@ warn/
   CONTRIBUTING.md
   data/
     abilities.txt
+    community.json
+    community.lua
     debuffs.lua
+    json.lua
+    sha256.lua
     timer_learning.lua
     rules.lua
     rules/
@@ -36,6 +40,9 @@ warn/
       COVERAGE.md
   sounds/
     *.wav
+  community/
+    manifest.json
+    database.json
 ```
 
 Load or reload with:
@@ -45,12 +52,13 @@ Load or reload with:
 /addon reload warn
 ```
 
-The GUI is organized around six simple concepts:
+The GUI is organized around seven simple concepts:
 
 - **Abilities** — manual ability watch list
 - **Encounters** — automatic boss/encounter mechanics
 - **Debuffs** — global crowd-control and enfeeble state
 - **Learning** — locally observed repeat timers and their review queue
+- **Database** — safe community-data updates, status and rollback
 - **Appearance** — warning overlay presentation
 - **Sound** — global/custom WAV behavior
 
@@ -262,6 +270,34 @@ becomes uncertain instead of pretending the prediction is authoritative.
 
 Learned evidence is stored locally in `warn_learning` settings, separately from the curated
 rule database. Warn does not upload or submit observations automatically.
+
+## v1.9 community database updates
+
+Open `/warn` → **Database** to check for reviewed encounter-data updates. Warn checks at most
+once per day when its GUI opens by default, but it never installs an update without approval.
+
+The update path is data-only:
+
+```text
+Official manifest
+        ↓
+Windows-validated HTTPS + restricted official database URL
+        ↓
+2 MB limit + SHA-256 verification
+        ↓
+Strict JSON schema validation
+        ↓
+Backup current database
+        ↓
+Install and reload encounter rules
+```
+
+Downloaded files cannot execute Lua or replace `warn.lua`. Community rules merge by stable rule
+ID, allowing the reviewed database to add rules or correct bundled rules. Personal sound choices,
+disabled alerts, normal settings and learned timers remain separate.
+
+If an update behaves unexpectedly, use **Roll Back Database** in the same tab to exchange the
+installed database with its most recent validated backup.
 
 ## Maintained debuff alerts
 

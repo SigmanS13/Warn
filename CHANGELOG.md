@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.9.0
+- Added a GUI-first **Database** tab for checking and installing community encounter-data updates.
+- Added once-per-day automatic update checks when the Warn GUI opens; installation always requires explicit approval.
+- Added a non-executable JSON community database format with strict field, type, size, URL and rule-count validation.
+- Added SHA-256 verification for downloaded database bytes before installation.
+- Uses Windows' native HTTPS stack so certificate validation follows the operating-system trust store.
+- Restricted manifest database URLs to the official `SigmanS13/Warn` raw GitHub repository.
+- Added automatic backup before installation and a GUI rollback button.
+- Added stable-ID merging so reviewed community rules can add to or correct bundled rules without changing addon code.
+- Kept personal settings, sound overrides and learned timer evidence separate from community updates.
+- Added updater security and merge tests, including known SHA-256 vectors and malicious-data rejection cases.
+
 ## 1.8.0
 - Added automatic local encounter-timer learning for repeated hostile actor + ability pairs.
 - Added duplicate suppression so a `readies`/`uses` or `starts casting`/`casts` pair counts as one observation.

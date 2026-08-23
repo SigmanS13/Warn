@@ -13,6 +13,10 @@ Warn's encounter knowledge is intentionally kept outside `warn.lua` so the datab
 
 `../rules.lua` loads these modules and merges their `ability_rules`, `state_rules`, and catalog entries.
 
+After the bundled modules load, Warn can merge the validated data-only database at
+`../community.json`. Community entries with an existing stable rule ID replace that bundled rule;
+new IDs are appended. The downloaded file is strict JSON and is never executed as Lua.
+
 ## Ability/spell rule fields
 
 Common fields:

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "database_version": 1,
+  "minimum_warn_version": "1.9.0",
+  "published_at": "2026-08-23T00:00:00Z",
+  "database_url": "https://raw.githubusercontent.com/SigmanS13/Warn/main/community/database.json",
+  "sha256": "38ec7a455ffe43e3f9274e3d7c24ad77533e11a714fbeaf603e013071a1b255b",
+  "encounter_count": 0,
+  "rule_count": 0,
+  "release_notes": "Initial data-only community database channel."
+}

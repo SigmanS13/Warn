@@ -77,6 +77,7 @@ Use:
 ```
 
 to test changes without editing the encounter database.
+
 ## Learned timer observations
 
 Warn's Learning tab records local timing evidence, not verified encounter truth. A learned
@@ -86,3 +87,21 @@ interval is repeatable and understanding any phase, HP, difficulty, or random-us
 When proposing a learned timer, include the actor, ability, observed intervals, sample count,
 content context, and an external verification source when one exists. Do not convert a local
 suggestion directly into a verified rule solely because its confidence score is high.
+
+## Community database publication
+
+Reviewed community rules are published as JSON in `community/database.json`; the addon never
+executes downloaded Lua. The database supports `ability_rules`, `state_rules`, and `catalog`
+arrays using the same stable fields documented above. Every published rule must have
+`verified: true` and an HTTPS provenance source.
+
+Before publishing a new database version:
+
+1. Increase the integer `database_version` in both the database and manifest.
+2. Set the publication timestamps.
+3. Recalculate the database file's exact SHA-256 and place it in `community/manifest.json`.
+4. Set the manifest rule and encounter counts to the exact JSON array totals.
+5. Run `tests/community_spec.lua` and parse every Lua file.
+
+Do not publish executable code, local learned observations, user settings, or unreviewed timer
+guesses through the community database channel.

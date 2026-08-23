@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '1.8.0';
+addon.version   = '1.9.0';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -43,6 +43,14 @@ local settings = require('settings');
 local chat     = require('chat');
 local ffi      = require('ffi');
 
+local COMMUNITY_MANIFEST_URL = 'https://raw.githubusercontent.com/SigmanS13/Warn/main/community/manifest.json';
+
+ffi.cdef[[
+    int __stdcall URLDownloadToFileA(void* caller, const char* url, const char* filename, unsigned int reserved, void* callback);
+]];
+local urlmon = nil;
+pcall(function () urlmon = ffi.load('urlmon'); end);
+
 --------------------------------------------------------------------------------------------------
 -- Default settings
 --------------------------------------------------------------------------------------------------
@@ -77,6 +85,12 @@ local default_settings = T{
         minimum_interval     = 5,
         maximum_interval     = 900,
         confidence_threshold = 0.80,
+    },
+    community = T{
+        enabled              = true,
+        auto_check           = true,
+        check_interval_hours = 24,
+        last_checked_at      = 0,
     },
     debuffs = T{
         enabled          = true,
@@ -238,6 +252,24 @@ warn = T{
         next_save = 0,
         selected_key = nil,
         show_ignored = T{ false },
+    },
+
+    community = T{
+        engine = nil,
+        json = nil,
+        sha256 = nil,
+        installed = nil,
+        remote_manifest = nil,
+        status = 'idle',
+        message = 'Not checked yet.',
+        check_requested = false,
+        update_requested = false,
+        rollback_requested = false,
+        busy = false,
+        auto_check_queued = false,
+        backup_available = false,
+        loaded_rule_count = 0,
+        loaded_catalog_count = 0,
     },
 
     active = T{
@@ -481,6 +513,47 @@ local function ensure_learning_settings()
     if (learning.confidence_threshold == nil) then learning.confidence_threshold = 0.80; end
 end
 
+local function ensure_community_settings()
+    if (warn.settings.community == nil) then
+        warn.settings.community = T{
+            enabled = true,
+            auto_check = true,
+            check_interval_hours = 24,
+            last_checked_at = 0,
+        };
+    end
+    local cfg = warn.settings.community;
+    if (cfg.enabled == nil) then cfg.enabled = true; end
+    if (cfg.auto_check == nil) then cfg.auto_check = true; end
+    if (cfg.check_interval_hours == nil) then cfg.check_interval_hours = 24; end
+    if (cfg.last_checked_at == nil) then cfg.last_checked_at = 0; end
+end
+
+local function load_data_module(filename, requiredFunction)
+    local path = addon.path .. '/data/' .. filename;
+    local chunk, loadErr = loadfile(path);
+    if (chunk == nil) then return nil, 'Failed to load ' .. filename .. ': ' .. tostring(loadErr); end
+    local ok, module = pcall(chunk);
+    if (not ok or type(module) ~= 'table') then return nil, 'Invalid ' .. filename .. ': ' .. tostring(module); end
+    if (requiredFunction ~= nil and type(module[requiredFunction]) ~= 'function') then
+        return nil, filename .. ' is missing ' .. requiredFunction;
+    end
+    return module;
+end
+
+local function load_community_modules()
+    local json, err = load_data_module('json.lua', 'decode');
+    if (json == nil) then return false, err; end
+    local sha256; sha256, err = load_data_module('sha256.lua', 'digest');
+    if (sha256 == nil) then return false, err; end
+    local engine; engine, err = load_data_module('community.lua', 'validate_database');
+    if (engine == nil) then return false, err; end
+    warn.community.json = json;
+    warn.community.sha256 = sha256;
+    warn.community.engine = engine;
+    return true;
+end
+
 local function load_timer_learning()
     local path = addon.path .. '/data/timer_learning.lua';
     local chunk, loadErr = loadfile(path);
@@ -617,6 +690,70 @@ local function load_debuff_definitions()
     return true;
 end
 
+local function read_binary_file(path, maximumBytes)
+    local file = io.open(path, 'rb');
+    if (file == nil) then return nil, 'File not found: ' .. tostring(path); end
+    local body = file:read('*a');
+    file:close();
+    if (body == nil) then return nil, 'Could not read: ' .. tostring(path); end
+    if (maximumBytes ~= nil and #body > maximumBytes) then return nil, 'File exceeds the size limit.'; end
+    return body;
+end
+
+local function decode_json(body, label)
+    if (warn.community.json == nil) then return nil, 'JSON decoder is unavailable.'; end
+    local ok, value = pcall(warn.community.json.decode, body);
+    if (not ok) then return nil, tostring(label or 'JSON') .. ': ' .. tostring(value); end
+    return value;
+end
+
+local function decode_community_database(body, expectedVersion)
+    local raw, err = decode_json(body, 'Community database');
+    if (raw == nil) then return nil, err; end
+    local validated; validated, err = warn.community.engine.validate_database(raw);
+    if (validated == nil) then return nil, 'Community database rejected: ' .. tostring(err); end
+    if (expectedVersion ~= nil and tonumber(validated.database_version) ~= tonumber(expectedVersion)) then
+        return nil, 'Database version does not match its manifest.';
+    end
+    return validated;
+end
+
+local function community_data_path(suffix)
+    return addon.path .. '/data/community.json' .. tostring(suffix or '');
+end
+
+local function update_community_backup_state()
+    local file = io.open(community_data_path('.bak'), 'rb');
+    warn.community.backup_available = file ~= nil;
+    if (file ~= nil) then file:close(); end
+end
+
+local function load_installed_community_database(announce)
+    warn.community.installed = nil;
+    warn.community.loaded_rule_count = 0;
+    warn.community.loaded_catalog_count = 0;
+    update_community_backup_state();
+
+    if (warn.community.engine == nil) then return false; end
+    local body, err = read_binary_file(community_data_path(), 2 * 1024 * 1024);
+    if (body == nil) then
+        warn.community.message = 'No installed community database.';
+        if (announce) then print(chat.header(addon.name):append(chat.warning(warn.community.message))); end
+        return false;
+    end
+    local database; database, err = decode_community_database(body, nil);
+    if (database == nil) then
+        warn.community.status = 'error';
+        warn.community.message = err;
+        if (announce) then print(chat.header(addon.name):append(chat.error(err))); end
+        return false;
+    end
+    warn.community.installed = database;
+    warn.community.loaded_rule_count = #(database.ability_rules or {}) + #(database.state_rules or {});
+    warn.community.loaded_catalog_count = #(database.catalog or {});
+    return true;
+end
+
 function load_context_rules()
     warn.rules = { ability_rules = {}, state_rules = {}, catalog = {} };
     warn.ruleState = {};
@@ -637,6 +774,11 @@ function load_context_rules()
     warn.rules.ability_rules = data.ability_rules or {};
     warn.rules.state_rules = data.state_rules or {};
     warn.rules.catalog = data.catalog or {};
+
+    ensure_community_settings();
+    if (warn.settings.community.enabled and warn.community.engine ~= nil and warn.community.installed ~= nil) then
+        warn.rules = warn.community.engine.merge(warn.rules, warn.community.installed);
+    end
 
     for _, rule in ipairs(warn.rules.state_rules) do
         if (rule.id ~= nil) then
@@ -2210,6 +2352,244 @@ local function save_pending_learning_data()
     end
 end
 
+--------------------------------------------------------------------------------------------------
+-- Data-only community database updates
+--------------------------------------------------------------------------------------------------
+
+local function set_community_status(status, message)
+    warn.community.status = status;
+    warn.community.message = tostring(message or '');
+end
+
+local function https_get(url, maximumBytes)
+    if (urlmon == nil) then return nil, 'Windows HTTPS support is unavailable.'; end
+    if (type(url) ~= 'string' or not url:match('^https://')) then return nil, 'Only HTTPS downloads are allowed.'; end
+
+    local tempPath = (addon.path .. '/data/.warn_download.tmp'):gsub('/', '\\');
+    os.remove(tempPath);
+    local requestUrl = url;
+    if (url == COMMUNITY_MANIFEST_URL) then
+        requestUrl = url .. '?warn_check=' .. tostring(os.time());
+    end
+    local ok, result = pcall(function ()
+        return tonumber(urlmon.URLDownloadToFileA(nil, requestUrl, tempPath, 0, nil));
+    end);
+    if (not ok or result ~= 0) then
+        os.remove(tempPath);
+        return nil, 'Windows HTTPS download failed (code ' .. tostring(result) .. ').';
+    end
+    local body, err = read_binary_file(tempPath, maximumBytes);
+    os.remove(tempPath);
+    if (body == nil) then return nil, err; end
+    return body;
+end
+
+local function check_community_database_now()
+    if (warn.community.busy or warn.community.engine == nil) then return false; end
+    warn.community.busy = true;
+    set_community_status('checking', 'Checking the official community database...');
+
+    local body, err = https_get(COMMUNITY_MANIFEST_URL, 64 * 1024);
+    if (body == nil) then
+        warn.community.busy = false;
+        set_community_status('error', err);
+        return false;
+    end
+
+    local raw; raw, err = decode_json(body, 'Community manifest');
+    if (raw == nil) then
+        warn.community.busy = false;
+        set_community_status('error', err);
+        return false;
+    end
+    local manifest; manifest, err = warn.community.engine.validate_manifest(raw);
+    if (manifest == nil) then
+        warn.community.busy = false;
+        set_community_status('error', 'Manifest rejected: ' .. tostring(err));
+        return false;
+    end
+
+    local compatible = warn.community.engine.compare_versions(addon.version, manifest.minimum_warn_version);
+    if (compatible == nil or compatible < 0) then
+        warn.community.busy = false;
+        set_community_status('error', 'This database requires Warn ' .. tostring(manifest.minimum_warn_version) .. ' or newer.');
+        return false;
+    end
+
+    warn.community.remote_manifest = manifest;
+    warn.settings.community.last_checked_at = os.time();
+    save_settings();
+
+    local installedVersion = warn.community.installed and tonumber(warn.community.installed.database_version) or 0;
+    if (tonumber(manifest.database_version) > installedVersion) then
+        set_community_status('update_available', string.format(
+            'Database v%d is available (%d rules, %d encounters).',
+            manifest.database_version, manifest.rule_count, manifest.encounter_count));
+    else
+        set_community_status('up_to_date', 'Community database is up to date.');
+    end
+    warn.community.busy = false;
+    return true;
+end
+
+local function write_binary_file(path, body)
+    local file, err = io.open(path, 'wb');
+    if (file == nil) then return false, tostring(err or 'Could not open file for writing.'); end
+    local ok, writeErr = file:write(body);
+    file:close();
+    if (not ok) then return false, tostring(writeErr or 'Could not write file.'); end
+    return true;
+end
+
+local function install_community_database_now()
+    if (warn.community.busy) then return false; end
+    local manifest = warn.community.remote_manifest;
+    if (manifest == nil) then
+        set_community_status('error', 'Check for updates before installing.');
+        return false;
+    end
+
+    warn.community.busy = true;
+    set_community_status('downloading', 'Downloading and validating database v' .. tostring(manifest.database_version) .. '...');
+    local body, err = https_get(manifest.database_url, 2 * 1024 * 1024);
+    if (body == nil) then
+        warn.community.busy = false;
+        set_community_status('error', err);
+        return false;
+    end
+
+    local actualHash = warn.community.sha256.digest(body):lower();
+    if (actualHash ~= tostring(manifest.sha256):lower()) then
+        warn.community.busy = false;
+        set_community_status('error', 'SHA-256 verification failed. The downloaded database was not installed.');
+        return false;
+    end
+
+    local database; database, err = decode_community_database(body, manifest.database_version);
+    if (database == nil) then
+        warn.community.busy = false;
+        set_community_status('error', err);
+        return false;
+    end
+    local actualRuleCount = #(database.ability_rules or {}) + #(database.state_rules or {});
+    if (actualRuleCount ~= tonumber(manifest.rule_count) or #(database.catalog or {}) ~= tonumber(manifest.encounter_count)) then
+        warn.community.busy = false;
+        set_community_status('error', 'Manifest counts do not match the downloaded database.');
+        return false;
+    end
+
+    local livePath = community_data_path();
+    local tempPath = community_data_path('.tmp');
+    local backupPath = community_data_path('.bak');
+    os.remove(tempPath);
+    local wrote; wrote, err = write_binary_file(tempPath, body);
+    if (not wrote) then
+        warn.community.busy = false;
+        set_community_status('error', 'Could not stage database update: ' .. tostring(err));
+        return false;
+    end
+
+    os.remove(backupPath);
+    local existing = io.open(livePath, 'rb');
+    if (existing ~= nil) then
+        existing:close();
+        local backedUp, backupErr = os.rename(livePath, backupPath);
+        if (not backedUp) then
+            os.remove(tempPath);
+            warn.community.busy = false;
+            set_community_status('error', 'Could not back up the installed database: ' .. tostring(backupErr));
+            return false;
+        end
+    end
+
+    local installed, installErr = os.rename(tempPath, livePath);
+    if (not installed) then
+        os.rename(backupPath, livePath);
+        os.remove(tempPath);
+        warn.community.busy = false;
+        set_community_status('error', 'Could not activate the database update: ' .. tostring(installErr));
+        return false;
+    end
+
+    load_installed_community_database(false);
+    load_context_rules();
+    update_community_backup_state();
+    warn.community.busy = false;
+    set_community_status('installed', string.format(
+        'Installed database v%d: %d rules and %d encounters loaded.',
+        database.database_version, actualRuleCount, #(database.catalog or {})));
+    return true;
+end
+
+local function rollback_community_database_now()
+    if (warn.community.busy or not warn.community.backup_available) then return false; end
+    warn.community.busy = true;
+    local livePath = community_data_path();
+    local backupPath = community_data_path('.bak');
+    local swapPath = community_data_path('.swap');
+
+    local backupBody, err = read_binary_file(backupPath, 2 * 1024 * 1024);
+    if (backupBody == nil) then
+        warn.community.busy = false;
+        set_community_status('error', 'Could not read rollback database: ' .. tostring(err));
+        return false;
+    end
+    local rollbackDatabase; rollbackDatabase, err = decode_community_database(backupBody, nil);
+    if (rollbackDatabase == nil) then
+        warn.community.busy = false;
+        set_community_status('error', 'Rollback database rejected: ' .. tostring(err));
+        return false;
+    end
+
+    os.remove(swapPath);
+    local movedCurrent, moveErr = os.rename(livePath, swapPath);
+    if (not movedCurrent) then
+        warn.community.busy = false;
+        set_community_status('error', 'Could not prepare rollback: ' .. tostring(moveErr));
+        return false;
+    end
+    local restored, restoreErr = os.rename(backupPath, livePath);
+    if (not restored) then
+        os.rename(swapPath, livePath);
+        warn.community.busy = false;
+        set_community_status('error', 'Could not restore rollback database: ' .. tostring(restoreErr));
+        return false;
+    end
+    os.rename(swapPath, backupPath);
+
+    load_installed_community_database(false);
+    load_context_rules();
+    update_community_backup_state();
+    warn.community.busy = false;
+    set_community_status('rolled_back', 'Restored community database v' .. tostring(rollbackDatabase.database_version) .. '.');
+    return true;
+end
+
+local function process_community_requests()
+    if (warn.community.busy) then return; end
+    if (warn.community.rollback_requested) then
+        warn.community.rollback_requested = false;
+        rollback_community_database_now();
+    elseif (warn.community.update_requested) then
+        warn.community.update_requested = false;
+        install_community_database_now();
+    elseif (warn.community.check_requested) then
+        warn.community.check_requested = false;
+        check_community_database_now();
+    end
+end
+
+local function queue_automatic_community_check()
+    ensure_community_settings();
+    local cfg = warn.settings.community;
+    if (not cfg.enabled or not cfg.auto_check or warn.community.auto_check_queued) then return; end
+    warn.community.auto_check_queued = true;
+    local interval = math.max(1, tonumber(cfg.check_interval_hours) or 24) * 3600;
+    if ((os.time() - (tonumber(cfg.last_checked_at) or 0)) >= interval) then
+        warn.community.check_requested = true;
+    end
+end
+
 -- Compatibility wrappers preserve the v1.5.x commands while the implementation is now unified.
 local function clear_sleep_tracker(announce)
     clear_debuff_status(get_debuff_definition('sleep'), announce);
@@ -3410,6 +3790,85 @@ function render_timer_learning_tab()
 end
 
 --------------------------------------------------------------------------------------------------
+-- GUI: Community Database tab
+--------------------------------------------------------------------------------------------------
+
+function render_community_database_tab()
+    ensure_community_settings();
+    local cfg = warn.settings.community;
+    local installedVersion = warn.community.installed and tonumber(warn.community.installed.database_version) or 0;
+
+    imgui.BeginChild('warn_community_scroll', { 0, 0 }, 0);
+    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Community Encounter Database');
+    imgui.TextColored({ 0.70, 0.78, 0.88, 1.0 },
+        'Updates contain validated encounter data only. Warn never downloads or replaces addon code.');
+
+    if (imgui.Checkbox('Enable Installed Community Rules', { cfg.enabled })) then
+        cfg.enabled = not cfg.enabled;
+        save_settings();
+        load_context_rules();
+    end
+    if (imgui.Checkbox('Check Automatically When Warn Opens', { cfg.auto_check })) then
+        cfg.auto_check = not cfg.auto_check;
+        warn.community.auto_check_queued = false;
+        save_settings();
+    end
+    imgui.TextColored({ 0.62, 0.62, 0.62, 1.0 }, 'Automatic checks run at most once every 24 hours. Installation always requires your approval.');
+
+    imgui.Separator();
+    imgui.Text(string.format('Installed Database: v%d', installedVersion));
+    imgui.Text(string.format('Installed Community Content: %d rules / %d encounters',
+        warn.community.loaded_rule_count or 0, warn.community.loaded_catalog_count or 0));
+    imgui.Text(string.format('Combined Runtime Rules: %d action / %d state',
+        #(warn.rules.ability_rules or {}), #(warn.rules.state_rules or {})));
+
+    local statusColors = {
+        error = { 1.0, 0.40, 0.35, 1.0 },
+        update_available = { 1.0, 0.85, 0.25, 1.0 },
+        installed = { 0.45, 1.0, 0.55, 1.0 },
+        rolled_back = { 0.55, 0.85, 1.0, 1.0 },
+        up_to_date = { 0.55, 1.0, 0.65, 1.0 },
+    };
+    imgui.TextColored(statusColors[warn.community.status] or { 0.75, 0.75, 0.75, 1.0 },
+        'Status: ' .. tostring(warn.community.message));
+
+    if (not warn.community.busy) then
+        if (imgui.Button('Check for Updates')) then warn.community.check_requested = true; end
+        local manifest = warn.community.remote_manifest;
+        if (manifest ~= nil and tonumber(manifest.database_version) > installedVersion) then
+            imgui.SameLine();
+            if (imgui.Button('Install Database v' .. tostring(manifest.database_version))) then
+                warn.community.update_requested = true;
+            end
+        end
+        if (warn.community.backup_available) then
+            imgui.SameLine();
+            if (imgui.Button('Roll Back Database')) then warn.community.rollback_requested = true; end
+        end
+    else
+        imgui.TextColored({ 1.0, 0.85, 0.25, 1.0 }, 'Database operation in progress...');
+    end
+
+    if (warn.community.remote_manifest ~= nil) then
+        local manifest = warn.community.remote_manifest;
+        imgui.Separator();
+        imgui.TextColored({ 0.75, 0.85, 1.0, 1.0 }, 'Latest Published Database');
+        imgui.Text(string.format('Version %d   |   Published %s', manifest.database_version, tostring(manifest.published_at)));
+        imgui.Text(string.format('%d rules   |   %d encounters', manifest.rule_count, manifest.encounter_count));
+        if (manifest.release_notes ~= nil and manifest.release_notes ~= '') then
+            imgui.TextColored({ 0.75, 0.75, 0.75, 1.0 }, 'Notes: ' .. tostring(manifest.release_notes));
+        end
+    end
+
+    imgui.Separator();
+    imgui.TextColored({ 0.65, 0.65, 0.65, 1.0 },
+        'Safety: 2 MB limit, strict JSON schema, official repository URL restriction, SHA-256 verification, and automatic backup.');
+    imgui.TextColored({ 0.65, 0.65, 0.65, 1.0 },
+        'Downloaded content cannot run Lua code and cannot change your personal settings or learned timers.');
+    imgui.EndChild();
+end
+
+--------------------------------------------------------------------------------------------------
 -- GUI: Sound tab
 --------------------------------------------------------------------------------------------------
 
@@ -3468,6 +3927,8 @@ function render_config_window()
         return;
     end
 
+    queue_automatic_community_check();
+
     if (not warn.guiSizeInitialized) then
         imgui.SetNextWindowSize({ 700, 720, });
         warn.guiSizeInitialized = true;
@@ -3504,6 +3965,12 @@ function render_config_window()
                 imgui.EndTabItem();
             end
 
+            local databaseLabel = (warn.community.status == 'update_available') and 'Database (!)' or 'Database';
+            if (imgui.BeginTabItem(databaseLabel, nil)) then
+                render_community_database_tab();
+                imgui.EndTabItem();
+            end
+
             if (imgui.BeginTabItem('Sound', nil)) then
                 render_sound_tab();
                 imgui.EndTabItem();
@@ -3526,6 +3993,7 @@ ashita.events.register('load', 'load_cb', function ()
     warn.learningData = settings.load(default_learning_data, 'warn_learning');
     ensure_context_settings();
     ensure_learning_settings();
+    ensure_community_settings();
     ensure_debuff_settings();
     ensure_rule_settings();
 
@@ -3574,6 +4042,13 @@ ashita.events.register('load', 'load_cb', function ()
     });
 
     load_abilities();
+    local communityOk, communityErr = load_community_modules();
+    if (communityOk) then
+        load_installed_community_database(false);
+    else
+        set_community_status('error', communityErr);
+        print(chat.header(addon.name):append(chat.error(communityErr)));
+    end
     load_context_rules();
     load_debuff_definitions();
     load_timer_learning();
@@ -4082,6 +4557,7 @@ ashita.events.register('d3d_present', 'present_cb', function ()
     process_deferred_debuff_losses();
     flush_debuff_loss_batch();
     save_pending_learning_data();
+    process_community_requests();
     render_config_window();
     render_overlay();
     render_critical_debuff_alert();
