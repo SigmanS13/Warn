@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '2.1.3';
+addon.version   = '2.2.0';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -98,6 +98,7 @@ local default_settings = T{
         contextual_sounds = true,
         state_triggers    = true,
         packet_recognition = true,
+        packet_layout      = 'auto', -- auto / retail / legacy (SimpleLog / DSP)
     },
     responsibilities = T{
         profiles = T{},
@@ -297,6 +298,7 @@ warn = T{
         recent = T{},
         packet_actions = 0,
         last_packet_action = '',
+        last_packet_layout = '',
     },
 
     timerLearning = T{
@@ -564,6 +566,7 @@ local function ensure_context_settings()
             contextual_sounds = true,
             state_triggers = true,
             packet_recognition = true,
+            packet_layout = 'auto',
         };
         save_settings();
         return;
@@ -574,6 +577,9 @@ local function ensure_context_settings()
     if (warn.settings.context.contextual_sounds == nil) then warn.settings.context.contextual_sounds = true; end
     if (warn.settings.context.state_triggers == nil) then warn.settings.context.state_triggers = true; end
     if (warn.settings.context.packet_recognition == nil) then warn.settings.context.packet_recognition = true; end
+    if (warn.settings.context.packet_layout ~= 'retail' and warn.settings.context.packet_layout ~= 'legacy') then
+        warn.settings.context.packet_layout = 'auto';
+    end
 end
 
 local function ensure_ui_settings()
@@ -2610,14 +2616,16 @@ local function process_action_packet(event)
     local raw = event.data_raw or event.data;
     local parsed, err = warn.actionPacket.parse(raw, event.size, function (data, offset, length)
         return ashita.bits.unpack_be(data, 0, offset, length);
-    end);
+    end, warn.settings.context.packet_layout);
     if (parsed == nil) then
         if (warn.debug) then print(chat.header(addon.name):append(chat.warning('0x028 parse skipped: ' .. tostring(err)))); end
         return;
     end
 
     if (parsed.action_type ~= 7 and parsed.action_type ~= 8) then return; end
-    if (parsed.action_count == nil or parsed.action_count < 1 or parsed.message == 0) then return; end
+    -- Some private-server 0x028 packets leave the message field at zero even though the
+    -- category and action payload are valid. Category 7/8 already identifies a begin event.
+    if (parsed.action_count == nil or parsed.action_count < 1) then return; end
 
     local actor = find_entity_name_by_server_id(parsed.actor_id);
     local ability = resolve_packet_action_name(parsed.action_type, parsed.action_param);
@@ -2626,6 +2634,7 @@ local function process_action_packet(event)
     local eventType = parsed.action_type == 7 and 'readies' or 'starts_casting';
     warn.reactive.packet_actions = (warn.reactive.packet_actions or 0) + 1;
     warn.reactive.last_packet_action = tostring(actor) .. ' - ' .. tostring(ability);
+    warn.reactive.last_packet_layout = tostring(parsed.layout or 'unknown');
     process_detected_action(actor, ability, eventType, nil, 'packet');
 end
 
@@ -4478,13 +4487,60 @@ end
 -- GUI: Options navigation
 --------------------------------------------------------------------------------------------------
 
+local function draw_role_icon(icon, x, y, size)
+    local draw = imgui.GetWindowDrawList();
+    local color = imgui.GetColorU32((warn.ui.theme and warn.ui.theme.brass_hover) or { 1.0, 0.84, 0.50, 1.0 });
+    local dim = imgui.GetColorU32((warn.ui.theme and warn.ui.theme.brass_dim) or { 0.55, 0.45, 0.25, 1.0 });
+    local thickness = math.max(1, get_ui_scale() * 1.5);
+
+    if (icon == 'shield') then
+        draw:AddLine({ x + 3, y + 3 }, { x + size - 3, y + 3 }, color, thickness);
+        draw:AddLine({ x + 3, y + 3 }, { x + 5, y + size - 7 }, color, thickness);
+        draw:AddLine({ x + size - 3, y + 3 }, { x + size - 5, y + size - 7 }, color, thickness);
+        draw:AddLine({ x + 5, y + size - 7 }, { x + size / 2, y + size - 2 }, color, thickness);
+        draw:AddLine({ x + size - 5, y + size - 7 }, { x + size / 2, y + size - 2 }, color, thickness);
+        draw:AddLine({ x + size / 2, y + 5 }, { x + size / 2, y + size - 5 }, dim, thickness);
+    elseif (icon == 'healing') then
+        draw:AddCircle({ x + size / 2, y + size / 2 }, size * 0.43, dim, 24, thickness);
+        draw:AddRectFilled({ x + size * 0.42, y + size * 0.20 }, { x + size * 0.58, y + size * 0.80 }, color, 1);
+        draw:AddRectFilled({ x + size * 0.20, y + size * 0.42 }, { x + size * 0.80, y + size * 0.58 }, color, 1);
+    elseif (icon == 'damage') then
+        draw:AddLine({ x + 4, y + size - 3 }, { x + size - 5, y + 4 }, color, thickness + 0.5);
+        draw:AddLine({ x + size - 8, y + 3 }, { x + size - 2, y + 8 }, color, thickness);
+        draw:AddLine({ x + size - 8, y + 3 }, { x + size - 11, y + 10 }, color, thickness);
+        draw:AddLine({ x + size - 2, y + 8 }, { x + size - 11, y + 10 }, color, thickness);
+        draw:AddLine({ x + 3, y + 4 }, { x + size - 4, y + size - 3 }, dim, thickness);
+        draw:AddCircleFilled({ x + 3, y + 4 }, 2.5, color, 12);
+    elseif (icon == 'support') then
+        draw:AddRect({ x + 3, y + 5 }, { x + size - 6, y + size - 2 }, dim, 2, 0, thickness);
+        draw:AddRect({ x + 7, y + 2 }, { x + size - 2, y + size - 5 }, color, 2, 0, thickness);
+        draw:AddLine({ x + 10, y + 6 }, { x + size - 6, y + size - 9 }, color, thickness);
+        draw:AddLine({ x + size - 6, y + 6 }, { x + 10, y + size - 9 }, color, thickness);
+    end
+end
+
+local function render_role_choice(definition, profile)
+    local cursor_x, cursor_y = imgui.GetCursorScreenPos();
+    if (definition.icon ~= nil) then
+        draw_role_icon(definition.icon, cursor_x + 1, cursor_y, 22 * get_ui_scale());
+        imgui.SetCursorPosX(imgui.GetCursorPosX() + (30 * get_ui_scale()));
+    end
+    local enabled = profile[definition.id] == true;
+    if (imgui.Checkbox(definition.label .. '##responsibility_' .. definition.id, { enabled })) then
+        profile[definition.id] = not enabled;
+        save_settings();
+    end
+    imgui.SameLine();
+    imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 }, definition.description);
+end
+
 local function render_responsibility_options()
     ensure_responsibility_settings();
     local profile, key = get_current_responsibility_profile(true);
-    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Responsibilities');
+    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Roles');
     imgui.TextColored({ 0.70, 0.78, 0.88, 1.0 }, 'Profile: ' .. get_player_job_text());
     imgui.TextColored({ 0.66, 0.72, 0.80, 1.0 },
-        'Warn detects capabilities automatically. These choices describe what your party expects you to handle.');
+        'Warn detects capabilities automatically. Roles describe your party function; assignments describe specific duties.');
     imgui.TextColored({ 0.66, 0.72, 0.80, 1.0 },
         'Critical mechanic facts always remain visible; these settings only suppress role-specific action instructions.');
     imgui.Separator();
@@ -4494,18 +4550,20 @@ local function render_responsibility_options()
         return;
     end
 
+    imgui.TextColored({ 0.84, 0.70, 0.38, 1.0 }, 'Party Role');
     for _, definition in ipairs(warn.mechanics.responsibilities) do
-        local enabled = profile[definition.id] == true;
-        if (imgui.Checkbox(definition.label .. '##responsibility_' .. definition.id, { enabled })) then
-            profile[definition.id] = not enabled;
-            save_settings();
-        end
-        imgui.SameLine();
-        imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 }, definition.description);
+        if (definition.group == 'role') then render_role_choice(definition, profile); end
+    end
+
+    imgui.Spacing();
+    imgui.Separator();
+    imgui.TextColored({ 0.84, 0.70, 0.38, 1.0 }, 'Special Assignments');
+    for _, definition in ipairs(warn.mechanics.responsibilities) do
+        if (definition.group == 'assignment') then render_role_choice(definition, profile); end
     end
 
     imgui.Separator();
-    if (imgui.Button('Reset This Job Profile')) then
+    if (imgui.Button('Reset This Role Profile')) then
         local _, mainJob = get_player_profile_identity();
         local defaults = warn.mechanics.default_profile(mainJob);
         local replacement = T{};
@@ -4514,7 +4572,7 @@ local function render_responsibility_options()
         save_settings();
     end
     imgui.TextColored({ 0.58, 0.62, 0.68, 1.0 },
-        'This profile is remembered automatically for this character and main job/subjob combination.');
+        'This role profile is remembered automatically for this character and main job/subjob combination.');
 end
 
 local function render_alert_options()
@@ -4524,7 +4582,7 @@ local function render_alert_options()
 
     local controls = {
         { key = 'enabled', label = 'Enable Verified Encounter Alerts', help = 'Only verified database rules create contextual alerts.' },
-        { key = 'job_counters', label = 'Show Assigned Action Instructions', help = 'Requires both an enabled responsibility and a capability Ashita confirms is usable.' },
+        { key = 'job_counters', label = 'Show Assigned Action Instructions', help = 'Requires both an enabled role or assignment and a capability Ashita confirms is usable.' },
         { key = 'packet_recognition', label = 'Use Passive Packet Recognition', help = 'Reads incoming actions for faster reaction; never modifies, blocks or injects packets.' },
         { key = 'state_triggers', label = 'Enable Encounter State Triggers', help = 'Allows verified movement, presence and maintained-state mechanics.' },
         { key = 'contextual_sounds', label = 'Use Contextual / Per-Alert Sounds', help = 'When disabled, every encounter alert uses the global sound.' },
@@ -4538,20 +4596,34 @@ local function render_alert_options()
         imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 }, control.help);
     end
 
+    if (cfg.packet_recognition) then
+        local layoutValues = { 'auto', 'retail', 'legacy' };
+        local layoutLabels = 'Auto Detect\000Retail / XiPackets\000SimpleLog / DSP Legacy\000\000';
+        local layoutIndex = cfg.packet_layout == 'retail' and 1 or (cfg.packet_layout == 'legacy' and 2 or 0);
+        local selectedLayout = { layoutIndex };
+        if (imgui.Combo('Action Packet Layout##warn_packet_layout', selectedLayout, layoutLabels)) then
+            cfg.packet_layout = layoutValues[selectedLayout[1] + 1] or 'auto';
+            save_settings();
+        end
+        imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 },
+            'Auto detects the common legacy target-count header used by SimpleLog and DSP-based servers.');
+    end
+
     imgui.Separator();
     imgui.TextColored({ 0.72, 0.80, 0.90, 1.0 }, 'Severity Levels');
     imgui.TextColored({ 0.55, 0.82, 1.0, 1.0 }, 'IMPORTANT - informational mechanic or useful state change');
     imgui.TextColored({ 1.0, 0.72, 0.25, 1.0 }, 'DANGER - meaningful damage, control or positioning risk');
     imgui.TextColored({ 1.0, 0.35, 0.30, 1.0 }, 'CRITICAL - lethal or fight-changing mechanic; factual warning always remains visible');
     imgui.TextColored({ 0.58, 0.62, 0.68, 1.0 }, string.format(
-        'Reactive packets recognized this session: %d%s', warn.reactive.packet_actions or 0,
-        warn.reactive.last_packet_action ~= '' and ('   Last: ' .. warn.reactive.last_packet_action) or ''));
+        'Reactive packets recognized this session: %d%s%s', warn.reactive.packet_actions or 0,
+        warn.reactive.last_packet_action ~= '' and ('   Last: ' .. warn.reactive.last_packet_action) or '',
+        warn.reactive.last_packet_layout ~= '' and ('   Layout: ' .. warn.reactive.last_packet_layout) or ''));
 end
 
 function render_options_tab()
     local learningCounts = get_learning_counts();
     local sections = {
-        { label = 'Responsibilities', render = render_responsibility_options },
+        { label = 'Roles', render = render_responsibility_options },
         { label = learningCounts.suggested > 0 and ('Learning (' .. learningCounts.suggested .. ')') or 'Learning', render = render_timer_learning_tab },
         { label = warn.community.status == 'update_available' and 'Database (!)' or 'Database', render = render_community_database_tab },
         { label = 'Debuffs', render = render_debuffs_tab },
@@ -4734,7 +4806,7 @@ function render_config_window()
         imgui.SameLine();
         imgui.TextColored(warn.ui.theme.text_muted,
             warn.mainTab[1] == 1 and '  Verified encounter intelligence and custom watches'
-                or '  Responsibilities, learning, alerts, appearance, and sound');
+                or '  Roles, learning, alerts, appearance, and sound');
         imgui.Separator();
 
         imgui.BeginChild('warn_main_content', { 0, -28 * scale }, 0);

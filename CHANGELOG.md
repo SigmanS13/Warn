@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.2.0
+- Added automatic dual-layout parsing for incoming action packet `0x028`: retail / XiPackets and the legacy target-count header commonly used by SimpleLog and DSP-based servers.
+- Added an **Action Packet Layout** override under **Options → Alerts**, plus the detected layout in packet diagnostics.
+- Fixed Odin Prime's Dread Spikes rule to alert at packet-visible cast start instead of depending on the completed-cast text line.
+- Promoted Dread Spikes to Critical with an immediate stop-attacking warning; Dispel instructions remain role- and capability-aware.
+- Expanded verified **A Stygian Pact** coverage for Ofnir, Gagnrath, Geirrothr, Sanngetall, Yggr, Kaustra, and Silencega.
+- Renamed **Responsibilities** to **Roles** and separated the four party roles—Tank, Primary Healer, Damage, and Support—from Cleanse, Interrupt, and Crowd Control assignments.
+- Added lightweight brass vector icons for Tank, Primary Healer, Damage, and Support without introducing extra texture files.
+
 ## 2.1.3
 - Changed the Appearance warning-card preview from an automatic persistent element to an explicit **Show / Hide Warning Preview** control.
 - The preview now closes automatically when leaving Appearance or closing the dashboard, so it cannot masquerade as a stuck live warning.

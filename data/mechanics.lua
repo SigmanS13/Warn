@@ -4,13 +4,13 @@
 local mechanics = {};
 
 mechanics.responsibilities = {
-    { id = 'primary_healer', label = 'Primary Healer', description = 'Show healing and recovery instructions.' },
-    { id = 'tank',           label = 'Tank',           description = 'Show enmity, positioning and tank-recovery instructions.' },
-    { id = 'interrupt',      label = 'Interrupt',      description = 'Show Stun and interruption instructions.' },
-    { id = 'cleanse',        label = 'Cleanse',        description = 'Show status-removal instructions.' },
-    { id = 'crowd_control',  label = 'Crowd Control',  description = 'Show sleep, bind and enfeeble-maintenance instructions.' },
-    { id = 'support',        label = 'Support',        description = 'Show dispel, resistance and party-support instructions.' },
-    { id = 'damage',         label = 'Damage',         description = 'Show damage-window and damage-hold instructions.' },
+    { id = 'tank',           label = 'Tank',           group = 'role', icon = 'shield', description = 'Show enmity, positioning and tank-recovery instructions.' },
+    { id = 'primary_healer', label = 'Primary Healer', group = 'role', icon = 'healing', description = 'Show healing and recovery instructions.' },
+    { id = 'damage',         label = 'Damage',         group = 'role', icon = 'damage', description = 'Show damage-window and damage-hold instructions.' },
+    { id = 'support',        label = 'Support',        group = 'role', icon = 'support', description = 'Show dispel, resistance and party-support instructions.' },
+    { id = 'cleanse',        label = 'Cleanse',        group = 'assignment', description = 'Show status-removal instructions.' },
+    { id = 'interrupt',      label = 'Interrupt',      group = 'assignment', description = 'Show Stun and interruption instructions.' },
+    { id = 'crowd_control',  label = 'Crowd Control',  group = 'assignment', description = 'Show sleep, bind and enfeeble-maintenance instructions.' },
 };
 
 local allowedResponsibilities = {};

@@ -65,9 +65,14 @@ Load or reload with:
 The GUI has two top-level areas:
 
 - **Encounters** — a metadata-driven browser for verified mechanics, plus a collapsed **Custom Watches** fallback
-- **Options** — Responsibilities, Learning, Database, Debuffs, Alerts, Appearance, and Sound
+- **Options** — Roles, Learning, Database, Debuffs, Alerts, Appearance, and Sound
 
 The default configuration is intended to work without setup; advanced customization is optional.
+
+Warn reads hostile action starts directly from incoming packet `0x028`, independently of chat
+formatting. **Options → Alerts → Action Packet Layout** defaults to Auto and supports both the
+retail / XiPackets header and the legacy target-count header used by SimpleLog and many
+DSP-based servers. A manual layout override is available for unusual server implementations.
 
 ## Interface and live alerts
 
@@ -149,11 +154,11 @@ only appended when Warn confirms that the current character knows the spell, the
 main/sub job can cast it at its level, there is enough MP, and the spell is off recast. For
 Blue Magic, Warn additionally verifies that the spell is currently set before recommending it.
 
-Mechanical capability is not the same as a party assignment. **Options → Responsibilities**
+Mechanical capability is not the same as a party assignment. **Options → Roles**
 stores a separate background profile for each character and main job/subjob combination. A
-counter instruction appears only when its responsibility is enabled and Ashita confirms the
+counter instruction appears only when its role or special assignment is enabled and Ashita confirms the
 action is currently available. Critical factual mechanic warnings remain visible regardless
-of responsibility settings.
+of role settings.
 
 Additional capability types (job abilities, items, songs, etc.) should be added only after
 their Ashita v4 availability checks are verified.
