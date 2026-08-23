@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '2.1.1';
+addon.version   = '2.1.2';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -241,10 +241,11 @@ warn = T{
         encounter_category_index = 1,
         encounter_rule_index = 1,
         portrait_provider = uiPortraits,
-        launcher_pressed_at = nil,
         next_launcher_save = nil,
         launcher_drag_mouse_x = nil,
         launcher_drag_mouse_y = nil,
+        launcher_press_active = false,
+        launcher_dragged = false,
     },
 
     debug = false,
@@ -3646,7 +3647,7 @@ function render_appearance_tab()
         warn.ui.launcher_position_initialized = false;
         save_settings();
     end
-    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 }, 'Hold Ctrl while dragging the launcher. Click it normally to open or close Warn.');
+    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 }, 'Drag the launcher normally to reposition it. Click without dragging to open or close Warn.');
 
     imgui.Separator();
     imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Live Warning Cards');
@@ -4547,8 +4548,6 @@ local function render_launcher()
         warn.ui.launcher_position_initialized = true;
     end
 
-    local io = imgui.GetIO();
-    local ctrl_down = io.KeyCtrl == true;
     local flags = bit.bor(ImGuiWindowFlags_NoDecoration, ImGuiWindowFlags_NoResize,
         ImGuiWindowFlags_NoScrollbar, ImGuiWindowFlags_NoSavedSettings,
         ImGuiWindowFlags_NoBackground, ImGuiWindowFlags_NoFocusOnAppearing,
@@ -4559,32 +4558,32 @@ local function render_launcher()
     imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, { 0, 0 });
     if (imgui.Begin('##warn_launcher', true, flags)) then
         local pointer = uiTextures.pointer(warn.ui.launcher_texture);
+        local item_x, item_y = imgui.GetCursorScreenPos();
+        local draw = imgui.GetWindowDrawList();
         if (pointer ~= nil) then
-            imgui.Image(pointer, { size, size }, { 0, 0 }, { 1, 1 });
+            draw:AddImage(pointer, { item_x, item_y }, { item_x + size, item_y + size },
+                { 0, 0 }, { 1, 1 }, 0xFFFFFFFF);
         else
-            imgui.InvisibleButton('##warn_launcher_fallback', { size, size });
-            local p_x, p_y = imgui.GetWindowPos();
-            local draw = imgui.GetWindowDrawList();
-            draw:AddCircleFilled({ p_x + size / 2, p_y + size / 2 }, size * 0.46,
+            draw:AddCircleFilled({ item_x + size / 2, item_y + size / 2 }, size * 0.46,
                 imgui.GetColorU32(warn.ui.theme.panel_bg), 48);
-            draw:AddCircle({ p_x + size / 2, p_y + size / 2 }, size * 0.43,
+            draw:AddCircle({ item_x + size / 2, item_y + size / 2 }, size * 0.43,
                 imgui.GetColorU32(warn.ui.theme.brass), 48, math.max(2, scale * 2));
-            draw:AddText({ p_x + size * 0.31, p_y + size * 0.23 },
+            draw:AddText({ item_x + size * 0.31, item_y + size * 0.23 },
                 imgui.GetColorU32(warn.ui.theme.brass_hover), 'W');
         end
+        imgui.InvisibleButton('##warn_launcher_control', { size, size });
 
-        if (imgui.IsItemHovered() and imgui.IsMouseReleased(0) and not ctrl_down) then
-            local drag_x, drag_y = imgui.GetMouseDragDelta(0, 0);
-            local dragged = (math.abs(tonumber(drag_x) or 0) + math.abs(tonumber(drag_y) or 0)) > 4;
-            if (not dragged) then
-                warn.isGuiOpen[1] = not warn.isGuiOpen[1];
-                if (warn.isGuiOpen[1]) then refresh_sound_files(false); end
-            end
+        if (imgui.IsItemClicked(0)) then
+            warn.ui.launcher_press_active = true;
+            warn.ui.launcher_dragged = false;
+            warn.ui.launcher_drag_mouse_x, warn.ui.launcher_drag_mouse_y = imgui.GetMousePos();
         end
 
-        if (ctrl_down and (imgui.IsItemHovered() or imgui.IsItemActive()) and imgui.IsMouseDown(0)) then
+        if (warn.ui.launcher_press_active and imgui.IsMouseDown(0)) then
             local mouse_x, mouse_y = imgui.GetMousePos();
-            if (warn.ui.launcher_drag_mouse_x ~= nil and warn.ui.launcher_drag_mouse_y ~= nil) then
+            if (imgui.IsMouseDragging(0, 3) and warn.ui.launcher_drag_mouse_x ~= nil and
+                warn.ui.launcher_drag_mouse_y ~= nil) then
+                warn.ui.launcher_dragged = true;
                 ui.launcher_position_x = math.max(0, math.min(display.x - size,
                     ui.launcher_position_x + mouse_x - warn.ui.launcher_drag_mouse_x));
                 ui.launcher_position_y = math.max(0, math.min(display.y - size,
@@ -4593,7 +4592,18 @@ local function render_launcher()
             end
             warn.ui.launcher_drag_mouse_x = mouse_x;
             warn.ui.launcher_drag_mouse_y = mouse_y;
-        else
+        elseif (warn.ui.launcher_press_active and imgui.IsMouseReleased(0)) then
+            if (warn.ui.launcher_dragged ~= true) then
+                warn.isGuiOpen[1] = not warn.isGuiOpen[1];
+                if (warn.isGuiOpen[1]) then refresh_sound_files(false); end
+            end
+            warn.ui.launcher_press_active = false;
+            warn.ui.launcher_dragged = false;
+            warn.ui.launcher_drag_mouse_x = nil;
+            warn.ui.launcher_drag_mouse_y = nil;
+        elseif (not imgui.IsMouseDown(0)) then
+            warn.ui.launcher_press_active = false;
+            warn.ui.launcher_dragged = false;
             warn.ui.launcher_drag_mouse_x = nil;
             warn.ui.launcher_drag_mouse_y = nil;
         end
@@ -4687,7 +4697,7 @@ function render_config_window()
                 'Controller: LB/RB tabs   D-pad navigate   B/Circle close');
         else
             imgui.TextColored(warn.ui.theme.text_muted,
-                'Tip: use the W launcher to reopen Warn. Hold Ctrl to drag it.');
+                'Tip: click the W launcher to reopen Warn, or drag it normally to reposition it.');
         end
     end
     imgui.End();

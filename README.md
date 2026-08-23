@@ -72,8 +72,8 @@ The default configuration is intended to work without setup; advanced customizat
 ## Interface and live alerts
 
 Warn ships with a Vana'diel tactical interface: deep indigo panels, brass details, engraved
-corner accents, and a small **W** launcher. Click the launcher to open or close Warn; hold
-Ctrl while dragging it to reposition it. It can be resized, reset, or hidden under
+corner accents, and a small **W** launcher. Click the launcher to open or close Warn, or drag
+it normally to reposition it. It can be resized, reset, or hidden under
 **Options → Appearance**.
 
 The interface can scale automatically from display height, or use explicit **1440p**,

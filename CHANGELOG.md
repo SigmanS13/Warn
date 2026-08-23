@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.2
+- Reworked the W launcher as a full-surface interactive control so it retains mouse capture during fast movement instead of depending on continuous image hover.
+- Removed the Ctrl-drag requirement: drag normally to reposition, or click without dragging to open or close Warn.
+- Added a small movement threshold so ordinary clicks do not accidentally reposition the launcher.
+
 ## 2.1.1
 - Fixed the dashboard failing during `d3d_present` on Ashita v4 builds that do not expose the optional `imgui.SetWindowFontScale` helper.
 - Font scaling is now capability-checked and gracefully falls back to the user's normal ImGui font while preserving panel, launcher, alert-card, and resolution scaling.
