@@ -1,0 +1,3501 @@
+addon.name      = 'warn';
+addon.author    = 'Sigman';
+addon.version   = '1.6.2';
+addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
+addon.link      = '';
+
+--[[
+    warn - Ashita v4 Addon
+    Created by Sigman
+    -----------------------
+    Independent of, and does not modify, the skillwatch addon. It reuses the
+    same general concepts demonstrated by skillwatch.lua (text_in based
+    ability detection, fonts based overlay, ImGui configuration window,
+    settings persistence) but is implemented as its own self-contained
+    addon with its own settings files, its own overlay, and its own ability
+    data file.
+
+    Commands:
+        /warn                       - Toggle the configuration GUI.
+        /warn <Ability Name>        - Add an ability to the warning list.
+        /warn off <Ability Name>    - Remove an ability from the warning list.
+        /warn list                  - Print the current warning list to chat.
+        /warn clear                 - Clear the entire warning list.
+        /warn test <Ability Name>   - Show a test warning.
+        /warn debug                 - Toggle parser/state debug logging.
+        /warn rules                 - Print loaded contextual rule counts.
+        /warn coverage              - Print encounter-index coverage counts.
+        /warn testrule <rule id>    - Trigger a contextual rule for testing.
+        /warn capability <spell>    - Check whether Warn considers a spell / BLU spell usable now.
+        /warn sounds                - Rescan the sounds folder for WAV files.
+        /warn rule <rule id>         - Select a contextual rule in the GUI.
+        /warn rule reset <rule id>   - Reset a rule's custom enable/sound settings.
+        /warn teststate <rule id> <gained|lost> - Test a maintained-debuff state transition.
+        /warn debuffs [list|clear|preset|test|lose|reload] - Manage global debuff tracking.
+        /warn sleep [list|clear|test|wake] - Compatibility alias for the Sleep debuff tracker.
+        /warn petrify [list|clear|test|recover] - Compatibility alias for the Petrify debuff tracker.
+--]]
+
+require('common');
+local imgui    = require('imgui');
+local fonts    = require('fonts');
+local settings = require('settings');
+local chat     = require('chat');
+local ffi      = require('ffi');
+
+--------------------------------------------------------------------------------------------------
+-- Default settings
+--------------------------------------------------------------------------------------------------
+
+local default_settings = T{
+    overlay = T{
+        position_x      = 480,
+        position_y      = 300,
+        size            = 3.0,          -- font size multiplier
+        text_color      = 0xFFFFFF00,   -- ARGB, bright yellow
+        outline_color   = 0xFF000000,   -- ARGB, black
+        bg_color        = 0xFF660000,   -- ARGB (alpha byte recalculated from bg_transparency), dark red
+        bg_transparency = 0.15,         -- 0 = fully opaque, 1 = fully invisible
+        blink           = true,
+        blink_speed     = 4.0,
+        duration        = 4.0,          -- seconds the warning stays up once triggered
+        template        = '!!! %s !!!',
+    },
+    sound = T{
+        enabled  = false,
+        selected = 'None',
+    },
+    context = T{
+        enabled           = true,
+        job_counters      = true,
+        contextual_sounds = true,
+        state_triggers    = true,
+    },
+    debuffs = T{
+        enabled          = true,
+        smart_reapply    = true,     -- maintenance alerts wait until this character can act
+        sound_enabled    = true,     -- debuff-loss sounds are independent from manual ability sounds
+        critical_center  = true,     -- Sleep/Petrify loss uses a dedicated center-screen alert
+        batch_window     = 0.20,     -- group near-simultaneous status losses
+        alert_duration   = 4.0,
+        statuses         = T{},      -- per-status user overrides keyed by stable status id
+    },
+
+    -- Legacy v1.5.x fields retained only so settings.load can migrate a user's
+    -- dedicated Sleep/Petrify preferences into the unified Debuff Engine.
+    sleep = T{
+        enabled = true,
+        wake_sound = '__global__',
+        wake_duration = 4.0,
+        batch_window = 0.20,
+    },
+    petrify = T{
+        enabled = true,
+        recovery_sound = '__global__',
+        recovery_duration = 4.0,
+        batch_window = 0.20,
+    },
+};
+
+local default_ability_settings = T{
+    enabled = T{},   -- map: ability name (exact, as it appears in data/abilities.txt) -> true
+};
+
+-- Per-rule user overrides. Rules remain data-driven in data/rules.lua; this file only
+-- stores the user's preferences (enabled state and sound override) by stable rule id.
+local default_rule_settings = T{
+    overrides = T{},
+};
+
+--------------------------------------------------------------------------------------------------
+-- Local helpers (colors)
+--------------------------------------------------------------------------------------------------
+
+local function argb_to_rgba_floats(argb)
+    argb = argb or 0xFFFFFFFF;
+    local a = bit.band(bit.rshift(argb, 24), 0xFF) / 255.0;
+    local r = bit.band(bit.rshift(argb, 16), 0xFF) / 255.0;
+    local g = bit.band(bit.rshift(argb, 8), 0xFF) / 255.0;
+    local b = bit.band(argb, 0xFF) / 255.0;
+    return { r, g, b, a };
+end
+
+local function rgba_floats_to_argb(t, alpha_override)
+    local r = math.floor((t[1] or 1.0) * 255 + 0.5);
+    local g = math.floor((t[2] or 1.0) * 255 + 0.5);
+    local b = math.floor((t[3] or 1.0) * 255 + 0.5);
+    local a = alpha_override;
+    if (a == nil) then
+        a = math.floor((t[4] or 1.0) * 255 + 0.5);
+    end
+    return bit.bor(
+        bit.lshift(bit.band(a, 0xFF), 24),
+        bit.lshift(bit.band(r, 0xFF), 16),
+        bit.lshift(bit.band(g, 0xFF), 8),
+        bit.band(b, 0xFF));
+end
+
+local function safe_format(fmt, value)
+    local ok, result = pcall(string.format, fmt, value);
+    if (ok) then
+        return result;
+    end
+    return '!!! ' .. tostring(value) .. ' !!!';
+end
+
+local function trim(s)
+    if (s == nil) then return ''; end
+    return (s:gsub('^%s+', ''):gsub('%s+$', ''));
+end
+
+--------------------------------------------------------------------------------------------------
+-- Addon state
+--------------------------------------------------------------------------------------------------
+
+warn = T{
+    font = nil,
+    criticalFont = nil,
+
+    settings = nil,
+    abilitySettings = nil,
+    ruleSettings = nil,
+
+    abilities = T{},        -- array of T{ name, enabledBool }
+    enabledLookup = T{},    -- map: lower(name) -> original-case name
+    soundFiles = T{ 'None', 'beep.wav', 'alert.wav', 'warning.wav', 'alarm.wav' },
+
+    isGuiOpen = T{ false },
+    guiSizeInitialized = false,
+    search = T{ '' },
+    selectedIndex = T{ -1 },
+    templateBuf = T{ '!!! %s !!!' },
+    ruleSearch = T{ '' },
+    selectedRuleId = nil,
+
+    debug = false,
+
+    rules = { ability_rules = {}, state_rules = {}, catalog = {} },
+    ruleState = {},
+    spellCache = {},
+    bluReader = T{
+        initialized = false,
+        available = false,
+        offset = nil,
+        error = nil,
+    },
+    entityScan = T{
+        next_scan = 0,
+        active_interval = 0.20,
+        idle_interval = 1.00,
+        entities = {},
+    },
+
+    -- Global debuff / crowd-control engine.  Definitions live in data/debuffs.lua.
+    -- Runtime state is zone-local and is never persisted.
+    debuffs = T{
+        definitions = {},
+        lookup = {},
+        tracked = {},              -- status id -> lower mob name -> tracked entry
+        mob_names = {},            -- lower mob name -> canonical hostile entity name
+        mob_counts = {},           -- lower mob name -> number of loaded hostile entities
+        next_scan = 0,
+        scan_interval = 0.75,
+        pending_losses = {},
+        batch_deadline = 0,
+        deferred_losses = {},      -- smart maintenance losses waiting for a usable counter
+        next_deferred_check = 0,
+        selected_id = 'sleep',
+        packet_losses = 0,     -- recognized 0x029 status-loss packets
+        last_packet_loss = '',
+        advanced_open = T{ false },
+    },
+
+    active = T{
+        firing = false,
+        name = '',
+        text = nil,
+        rule_id = nil,
+        sound = nil,
+        duration = nil,
+        startTime = 0,
+    },
+
+    critical = T{
+        firing = false,
+        text = '',
+        sound = nil,
+        duration = 4.0,
+        startTime = 0,
+    },
+};
+
+--------------------------------------------------------------------------------------------------
+-- Settings persistence
+--------------------------------------------------------------------------------------------------
+
+local function save_settings()
+    settings.save('warn_settings');
+end
+
+local function save_rule_settings()
+    if (warn.ruleSettings == nil) then
+        warn.ruleSettings = T{ overrides = T{} };
+    end
+    if (warn.ruleSettings.overrides == nil) then
+        warn.ruleSettings.overrides = T{};
+    end
+    settings.save('warn_rule_settings');
+end
+
+local function save_ability_settings()
+    local enabledMap = T{};
+    warn.abilities:each(function (v)
+        if (v[2]) then
+            enabledMap[v[1]] = true;
+        end
+    end);
+    warn.abilitySettings.enabled = enabledMap;
+    settings.save('warn_abilities');
+end
+
+settings.register('warn_settings', 'warn_settings_update', function (s)
+    if (s ~= nil) then warn.settings = s; end
+    settings.save('warn_settings');
+end);
+
+settings.register('warn_abilities', 'warn_abilities_update', function (s)
+    if (s ~= nil) then warn.abilitySettings = s; end
+    settings.save('warn_abilities');
+end);
+
+settings.register('warn_rule_settings', 'warn_rule_settings_update', function (s)
+    if (s ~= nil) then warn.ruleSettings = s; end
+    settings.save('warn_rule_settings');
+end);
+
+--------------------------------------------------------------------------------------------------
+-- Ability list management
+--------------------------------------------------------------------------------------------------
+
+function rebuild_enabled_lookup()
+    warn.enabledLookup = T{};
+    warn.abilities:each(function (v)
+        if (v[2]) then
+            warn.enabledLookup[v[1]:lower()] = v[1];
+        end
+    end);
+end
+
+function load_abilities()
+    warn.abilities = T{};
+
+    local f = io.open(addon.path .. '/data/abilities.txt', 'rb');
+    if (f == nil) then
+        print(chat.header(addon.name):append(chat.error('Failed to load data/abilities.txt.')));
+        rebuild_enabled_lookup();
+        return;
+    end
+
+    -- The source list contains some duplicate names. Keep the first occurrence only.
+    local seen = {};
+    for line in f:lines() do
+        local name = trim(line);
+        if (name ~= '') then
+            local key = name:lower();
+            if (not seen[key]) then
+                seen[key] = true;
+
+                local isEnabled = false;
+                if (warn.abilitySettings ~= nil and warn.abilitySettings.enabled ~= nil) then
+                    isEnabled = (warn.abilitySettings.enabled[name] == true);
+                end
+                table.insert(warn.abilities, T{ name, isEnabled });
+            end
+        end
+    end
+    f:close();
+
+    rebuild_enabled_lookup();
+end
+
+function count_enabled()
+    local c = 0;
+    warn.abilities:each(function (v)
+        if (v[2]) then c = c + 1; end
+    end);
+    return c;
+end
+
+function find_ability_entry(name)
+    local lname = name:lower();
+    local found = nil;
+    warn.abilities:each(function (v)
+        if (found == nil and v[1]:lower() == lname) then
+            found = v;
+        end
+    end);
+    return found;
+end
+
+function set_ability_enabled(name, enabled)
+    local entry = find_ability_entry(name);
+    if (entry == nil) then
+        print(chat.header(addon.name):append(chat.error('Ability not found in ability list: ')):append(chat.warning(name)));
+        return;
+    end
+
+    entry[2] = enabled;
+    save_ability_settings();
+    rebuild_enabled_lookup();
+
+    if (enabled) then
+        print(chat.header(addon.name):append(chat.message('Now warning on: ')):append(chat.warning(entry[1])));
+    else
+        print(chat.header(addon.name):append(chat.message('No longer warning on: ')):append(chat.warning(entry[1])));
+    end
+end
+
+function print_warning_list()
+    local c = count_enabled();
+    if (c == 0) then
+        print(chat.header(addon.name):append(chat.message('No warning abilities configured.')));
+        return;
+    end
+
+    print(chat.header(addon.name):append(chat.message(string.format('Warning on %d ability/abilities:', c))));
+    warn.abilities:each(function (v)
+        if (v[2]) then
+            print(chat.header(addon.name):append(chat.warning('  - ' .. v[1])));
+        end
+    end);
+end
+
+function clear_warning_list()
+    warn.abilities:each(function (v) v[2] = false; end);
+    save_ability_settings();
+    rebuild_enabled_lookup();
+    warn.selectedIndex[1] = -1;
+    warn.search[1] = '';
+    print(chat.header(addon.name):append(chat.message('Warning list cleared.')));
+end
+
+function enable_all_abilities()
+    warn.abilities:each(function (v) v[2] = true; end);
+    save_ability_settings();
+    rebuild_enabled_lookup();
+end
+
+function disable_all_abilities()
+    warn.abilities:each(function (v) v[2] = false; end);
+    save_ability_settings();
+    rebuild_enabled_lookup();
+end
+
+--------------------------------------------------------------------------------------------------
+-- Contextual encounter rules / player capability
+--------------------------------------------------------------------------------------------------
+
+local function ensure_context_settings()
+    if (warn.settings.context == nil) then
+        warn.settings.context = T{
+            enabled = true,
+            job_counters = true,
+            contextual_sounds = true,
+            state_triggers = true,
+        };
+        save_settings();
+        return;
+    end
+
+    if (warn.settings.context.enabled == nil) then warn.settings.context.enabled = true; end
+    if (warn.settings.context.job_counters == nil) then warn.settings.context.job_counters = true; end
+    if (warn.settings.context.contextual_sounds == nil) then warn.settings.context.contextual_sounds = true; end
+    if (warn.settings.context.state_triggers == nil) then warn.settings.context.state_triggers = true; end
+end
+
+local function ensure_debuff_settings()
+    if (warn.settings.debuffs == nil) then
+        warn.settings.debuffs = T{
+            enabled = true,
+            smart_reapply = true,
+            sound_enabled = true,
+            critical_center = true,
+            batch_window = 0.20,
+            alert_duration = 4.0,
+            statuses = T{},
+        };
+    end
+
+    if (warn.settings.debuffs.enabled == nil) then warn.settings.debuffs.enabled = true; end
+    if (warn.settings.debuffs.smart_reapply == nil) then warn.settings.debuffs.smart_reapply = true; end
+    if (warn.settings.debuffs.sound_enabled == nil) then warn.settings.debuffs.sound_enabled = true; end
+    if (warn.settings.debuffs.critical_center == nil) then warn.settings.debuffs.critical_center = true; end
+    if (warn.settings.debuffs.batch_window == nil) then warn.settings.debuffs.batch_window = 0.20; end
+    if (warn.settings.debuffs.alert_duration == nil) then warn.settings.debuffs.alert_duration = 4.0; end
+    if (warn.settings.debuffs.statuses == nil) then warn.settings.debuffs.statuses = T{}; end
+end
+
+local function get_debuff_override(definition, create)
+    if (definition == nil or definition.id == nil) then return nil; end
+    ensure_debuff_settings();
+    local key = tostring(definition.id):lower();
+    local override = warn.settings.debuffs.statuses[key];
+    if (override == nil and create) then
+        override = T{};
+        warn.settings.debuffs.statuses[key] = override;
+    end
+    return override;
+end
+
+local function load_debuff_definitions()
+    warn.debuffs.definitions = {};
+    warn.debuffs.lookup = {};
+
+    local path = addon.path .. '/data/debuffs.lua';
+    local chunk, loadErr = loadfile(path);
+    if (chunk == nil) then
+        print(chat.header(addon.name):append(chat.error('Failed to load data/debuffs.lua: ' .. tostring(loadErr))));
+        return false;
+    end
+
+    local ok, data = pcall(chunk);
+    if (not ok or type(data) ~= 'table') then
+        print(chat.header(addon.name):append(chat.error('Invalid data/debuffs.lua: ' .. tostring(data))));
+        return false;
+    end
+
+    local list = data.statuses or data;
+    if (type(list) ~= 'table') then
+        print(chat.header(addon.name):append(chat.error('data/debuffs.lua does not contain a status list.')));
+        return false;
+    end
+
+    local seen = {};
+    for _, definition in ipairs(list) do
+        if (type(definition) == 'table' and definition.id ~= nil and definition.name ~= nil) then
+            local id = tostring(definition.id):lower();
+            if (not seen[id]) then
+                seen[id] = true;
+                definition.id = id;
+                table.insert(warn.debuffs.definitions, definition);
+                warn.debuffs.lookup[id] = definition;
+                warn.debuffs.lookup[tostring(definition.name):lower()] = definition;
+            end
+        end
+    end
+
+    table.sort(warn.debuffs.definitions, function (a, b)
+        local ca = tostring(a.category or '');
+        local cb = tostring(b.category or '');
+        if (ca == cb) then return tostring(a.name):lower() < tostring(b.name):lower(); end
+        return ca < cb;
+    end);
+
+    -- Migrate the dedicated v1.5.x Sleep / Petrify preferences once, without
+    -- deleting the old values from a user's settings file.
+    ensure_debuff_settings();
+    if (warn.settings.debuffs.migrated_legacy ~= true) then
+        if (warn.settings.sleep ~= nil) then
+            local def = warn.debuffs.lookup['sleep'];
+            if (def ~= nil) then
+                local ov = get_debuff_override(def, true);
+                if (warn.settings.sleep.enabled ~= nil) then ov.enabled = warn.settings.sleep.enabled; end
+                if (warn.settings.sleep.wake_sound ~= nil) then ov.sound = warn.settings.sleep.wake_sound; end
+            end
+        end
+        if (warn.settings.petrify ~= nil) then
+            local def = warn.debuffs.lookup['petrify'];
+            if (def ~= nil) then
+                local ov = get_debuff_override(def, true);
+                if (warn.settings.petrify.enabled ~= nil) then ov.enabled = warn.settings.petrify.enabled; end
+                if (warn.settings.petrify.recovery_sound ~= nil) then ov.sound = warn.settings.petrify.recovery_sound; end
+            end
+        end
+        warn.settings.debuffs.migrated_legacy = true;
+        save_settings();
+    end
+
+    if (warn.debuffs.selected_id == nil or warn.debuffs.lookup[warn.debuffs.selected_id] == nil) then
+        warn.debuffs.selected_id = (#warn.debuffs.definitions > 0) and warn.debuffs.definitions[1].id or nil;
+    end
+
+    return true;
+end
+
+function load_context_rules()
+    warn.rules = { ability_rules = {}, state_rules = {}, catalog = {} };
+    warn.ruleState = {};
+
+    local path = addon.path .. '/data/rules.lua';
+    local chunk, loadErr = loadfile(path);
+    if (chunk == nil) then
+        print(chat.header(addon.name):append(chat.error('Failed to load data/rules.lua: ' .. tostring(loadErr))));
+        return;
+    end
+
+    local ok, data = pcall(chunk);
+    if (not ok or type(data) ~= 'table') then
+        print(chat.header(addon.name):append(chat.error('Invalid data/rules.lua: ' .. tostring(data))));
+        return;
+    end
+
+    warn.rules.ability_rules = data.ability_rules or {};
+    warn.rules.state_rules = data.state_rules or {};
+    warn.rules.catalog = data.catalog or {};
+
+    for _, rule in ipairs(warn.rules.state_rules) do
+        if (rule.id ~= nil) then
+            warn.ruleState[rule.id] = {
+                index = nil,
+                present = false,
+                triggered = false,
+                last_x = nil,
+                last_y = nil,
+                last_z = nil,
+                last_trigger = 0,
+                armed = true,
+                stationary_since = nil,
+                status_active = nil,
+                last_status_change = 0,
+            };
+        end
+    end
+end
+
+local function ensure_rule_settings()
+    if (warn.ruleSettings == nil) then
+        warn.ruleSettings = T{ overrides = T{} };
+    end
+    if (warn.ruleSettings.overrides == nil) then
+        warn.ruleSettings.overrides = T{};
+    end
+end
+
+local function get_all_context_rules()
+    local all = {};
+    for _, rule in ipairs(warn.rules.ability_rules or {}) do
+        rule.__rule_type = 'ability';
+        table.insert(all, rule);
+    end
+    for _, rule in ipairs(warn.rules.state_rules or {}) do
+        rule.__rule_type = 'state';
+        table.insert(all, rule);
+    end
+    table.sort(all, function (a, b)
+        local ac = tostring(a.content or 'Other'):lower();
+        local bc = tostring(b.content or 'Other'):lower();
+        if (ac ~= bc) then return ac < bc; end
+        local ae = tostring(a.encounter or a.actor or ''):lower();
+        local be = tostring(b.encounter or b.actor or ''):lower();
+        if (ae ~= be) then return ae < be; end
+        return tostring(a.ability or a.id or ''):lower() < tostring(b.ability or b.id or ''):lower();
+    end);
+    return all;
+end
+
+local function find_context_rule_by_id(id)
+    if (id == nil) then return nil; end
+    local wanted = tostring(id):lower();
+    for _, rule in ipairs(warn.rules.ability_rules or {}) do
+        if (tostring(rule.id or ''):lower() == wanted) then return rule; end
+    end
+    for _, rule in ipairs(warn.rules.state_rules or {}) do
+        if (tostring(rule.id or ''):lower() == wanted) then return rule; end
+    end
+    return nil;
+end
+
+local function get_rule_override(rule, create)
+    if (rule == nil or rule.id == nil) then return nil; end
+    ensure_rule_settings();
+    local key = tostring(rule.id);
+    local override = warn.ruleSettings.overrides[key];
+    if (override == nil and create) then
+        override = T{};
+        warn.ruleSettings.overrides[key] = override;
+    end
+    return override;
+end
+
+local function is_rule_enabled(rule)
+    local override = get_rule_override(rule, false);
+    if (override ~= nil and override.enabled ~= nil) then
+        return override.enabled == true;
+    end
+    return rule.enabled ~= false;
+end
+
+local function set_rule_enabled(rule, enabled)
+    local override = get_rule_override(rule, true);
+    override.enabled = enabled == true;
+    save_rule_settings();
+end
+
+-- Returns the effective contextual sound and whether the user explicitly overrode it.
+-- '__default__' means use the rule database's sound; 'None' intentionally suppresses sound.
+local function resolve_rule_sound(rule)
+    local override = get_rule_override(rule, false);
+    if (override ~= nil and override.sound ~= nil and override.sound ~= '__default__') then
+        if (override.sound == 'None') then
+            return 'None', true;
+        end
+
+        -- Preserve custom sound overrides only while that WAV still exists. If the
+        -- user later removes the file, gracefully fall back to the database default.
+        local wanted = tostring(override.sound):lower();
+        for i = 1, #warn.soundFiles do
+            if (tostring(warn.soundFiles[i]):lower() == wanted) then
+                return warn.soundFiles[i], true;
+            end
+        end
+    end
+    return rule.sound, false;
+end
+
+local function set_rule_sound_override(rule, value)
+    local override = get_rule_override(rule, true);
+    override.sound = value or '__default__';
+    save_rule_settings();
+end
+
+local function reset_rule_override(rule)
+    if (rule == nil or rule.id == nil) then return; end
+    ensure_rule_settings();
+    warn.ruleSettings.overrides[tostring(rule.id)] = nil;
+    save_rule_settings();
+end
+
+local function get_rule_display_name(rule)
+    if (rule == nil) then return 'Unknown Rule'; end
+    local actor = rule.actor and tostring(rule.actor) or nil;
+    local ability = rule.ability and tostring(rule.ability) or nil;
+    if (actor ~= nil and ability ~= nil) then return actor .. ' - ' .. ability; end
+    if (ability ~= nil) then return ability; end
+    if (actor ~= nil) then return '[STATE] ' .. actor; end
+    return tostring(rule.id or 'Unknown Rule');
+end
+
+local function get_player_job_text()
+    local player = AshitaCore:GetMemoryManager():GetPlayer();
+    if (player == nil) then return 'Unknown'; end
+
+    local jobAbbr = {
+        [0] = 'NON', [1] = 'WAR', [2] = 'MNK', [3] = 'WHM', [4] = 'BLM',
+        [5] = 'RDM', [6] = 'THF', [7] = 'PLD', [8] = 'DRK', [9] = 'BST',
+        [10] = 'BRD', [11] = 'RNG', [12] = 'SAM', [13] = 'NIN', [14] = 'DRG',
+        [15] = 'SMN', [16] = 'BLU', [17] = 'COR', [18] = 'PUP', [19] = 'DNC',
+        [20] = 'SCH', [21] = 'GEO', [22] = 'RUN',
+    };
+
+    local mainId = player:GetMainJob();
+    local subId = player:GetSubJob();
+    local main = jobAbbr[mainId] or tostring(mainId);
+    local sub = jobAbbr[subId] or tostring(subId);
+    return string.format('%s%d/%s%d', main, player:GetMainJobLevel(), sub, player:GetSubJobLevel());
+end
+
+local function find_spell_resource(name)
+    if (name == nil or name == '') then return nil; end
+    local key = name:lower();
+    if (warn.spellCache[key] ~= nil) then
+        return warn.spellCache[key] ~= false and warn.spellCache[key] or nil;
+    end
+
+    local rm = AshitaCore:GetResourceManager();
+    for id = 0, 2048 do
+        local spell = rm:GetSpellById(id);
+        if (spell ~= nil and spell.Name ~= nil and spell.Name[1] ~= nil) then
+            if (tostring(spell.Name[1]):lower() == key) then
+                warn.spellCache[key] = spell;
+                return spell;
+            end
+        end
+    end
+
+    warn.spellCache[key] = false;
+    return nil;
+end
+
+local function spell_job_usable(spell, player)
+    if (spell == nil or player == nil or spell.LevelRequired == nil) then return false; end
+
+    local mainJob = player:GetMainJob();
+    local subJob = player:GetSubJob();
+    local mainLevel = player:GetMainJobLevel();
+    local subLevel = player:GetSubJobLevel();
+
+    -- Official Ashita v4 blucheck indexes LevelRequired with jobId + 1.
+    local mainReq = spell.LevelRequired[mainJob + 1] or 0xFF;
+    local subReq = spell.LevelRequired[subJob + 1] or 0xFF;
+
+    local mainOk = mainReq > 0 and mainReq < 0xFF and mainLevel >= mainReq;
+    local subOk = subReq > 0 and subReq < 0xFF and subLevel >= subReq;
+    return mainOk or subOk;
+end
+
+local function can_use_spell_now(name)
+    local player = AshitaCore:GetMemoryManager():GetPlayer();
+    if (player == nil) then return false, nil, 'player data unavailable'; end
+    if (not player:HasSpellData()) then return false, nil, 'spell data not loaded'; end
+
+    local spell = find_spell_resource(name);
+    if (spell == nil) then return false, nil, 'spell not found in resources'; end
+    if (not player:HasSpell(spell.Id)) then return false, spell, 'spell not learned'; end
+    if (not spell_job_usable(spell, player)) then return false, spell, 'current main/sub job cannot cast it'; end
+
+    -- Only offer the counter if the player has enough MP right now.
+    local party = AshitaCore:GetMemoryManager():GetParty();
+    if (party ~= nil and spell.ManaCost ~= nil) then
+        local currentMp = party:GetMemberMP(0);
+        if (currentMp ~= nil and currentMp < spell.ManaCost) then
+            return false, spell, string.format('not enough MP (%d/%d)', currentMp, spell.ManaCost);
+        end
+    end
+
+    local recast = AshitaCore:GetMemoryManager():GetRecast();
+    if (recast ~= nil and recast:GetSpellTimer(spell.Id) > 0) then
+        return false, spell, 'spell is on recast';
+    end
+
+    return true, spell, 'available';
+end
+
+-- Blue Magic must be SET before it can be cast. Ashita's own v4 blusets addon reads
+-- the active BLU spell slots from the inventory buffer; use the same verified layout
+-- here, read-only, so job-aware encounter advice never recommends an unset BLU spell.
+local function init_blu_spell_reader()
+    if (warn.bluReader.initialized) then
+        return warn.bluReader.available;
+    end
+
+    warn.bluReader.initialized = true;
+
+    local ok, address = pcall(function ()
+        return ashita.memory.find(0, 0, 'C1E1032BC8B0018D????????????B9????????F3A55F5E5B', 10, 0);
+    end);
+    if (not ok or address == nil or address == 0) then
+        warn.bluReader.error = 'failed to locate BLU spell-set offset';
+        return false;
+    end
+
+    local castOk, offset = pcall(function ()
+        return ffi.cast('uint32_t*', address);
+    end);
+    if (not castOk or offset == nil) then
+        warn.bluReader.error = 'failed to initialize BLU spell-set reader';
+        return false;
+    end
+
+    warn.bluReader.offset = offset;
+    warn.bluReader.available = true;
+    return true;
+end
+
+local function get_set_blu_spell_ids()
+    local result = {};
+    local player = AshitaCore:GetMemoryManager():GetPlayer();
+    if (player == nil) then return result, 'player data unavailable'; end
+
+    local mainIsBlu = (player:GetMainJob() == 16);
+    local subIsBlu = (player:GetSubJob() == 16);
+    if (not mainIsBlu and not subIsBlu) then
+        return result, 'BLU is not current main/sub job';
+    end
+
+    if (not init_blu_spell_reader()) then
+        return result, warn.bluReader.error or 'BLU spell-set reader unavailable';
+    end
+
+    local ptr = AshitaCore:GetPointerManager():Get('inventory');
+    if (ptr == nil or ptr == 0) then return result, 'inventory pointer unavailable'; end
+
+    ptr = ashita.memory.read_uint32(ptr);
+    if (ptr == nil or ptr == 0) then return result, 'inventory buffer unavailable'; end
+
+    local offsetValue = tonumber(warn.bluReader.offset[0]);
+    if (offsetValue == nil or offsetValue == 0) then return result, 'BLU spell-set offset unavailable'; end
+
+    local slotOffset = mainIsBlu and 0x04 or 0xA0;
+    local ok, slots = pcall(function ()
+        return ashita.memory.read_array(ptr + offsetValue + slotOffset, 0x14);
+    end);
+    if (not ok or slots == nil) then return result, 'failed to read BLU spell slots'; end
+
+    for _, rawId in ipairs(slots) do
+        rawId = tonumber(rawId) or 0;
+        if (rawId > 0) then
+            result[rawId + 512] = true;
+        end
+    end
+    return result, 'available';
+end
+
+local function can_use_blu_spell_now(name)
+    local player = AshitaCore:GetMemoryManager():GetPlayer();
+    if (player == nil) then return false, nil, 'player data unavailable'; end
+    if (not player:HasSpellData()) then return false, nil, 'spell data not loaded'; end
+
+    local spell = find_spell_resource(name);
+    if (spell == nil) then return false, nil, 'spell not found in resources'; end
+    if (tonumber(spell.Skill) ~= 43) then return false, spell, 'not a Blue Magic spell'; end
+    if (not player:HasSpell(spell.Id)) then return false, spell, 'spell not learned'; end
+    if (not spell_job_usable(spell, player)) then return false, spell, 'current main/sub job cannot cast it'; end
+
+    local setSpells, setReason = get_set_blu_spell_ids();
+    if (not setSpells[spell.Id]) then
+        return false, spell, (setReason == 'available') and 'Blue Magic spell is not currently set' or setReason;
+    end
+
+    local party = AshitaCore:GetMemoryManager():GetParty();
+    if (party ~= nil and spell.ManaCost ~= nil) then
+        local currentMp = party:GetMemberMP(0);
+        if (currentMp ~= nil and currentMp < spell.ManaCost) then
+            return false, spell, string.format('not enough MP (%d/%d)', currentMp, spell.ManaCost);
+        end
+    end
+
+    local recast = AshitaCore:GetMemoryManager():GetRecast();
+    if (recast ~= nil and recast:GetSpellTimer(spell.Id) > 0) then
+        return false, spell, 'spell is on recast';
+    end
+
+    return true, spell, 'available';
+end
+
+local function get_available_counter(rule)
+    if (rule == nil or not warn.settings.context.job_counters) then
+        return nil;
+    end
+
+    -- Support both the initial single-counter schema and a future list of alternatives.
+    local candidates = rule.counters;
+    if (candidates == nil and rule.counter ~= nil) then
+        candidates = { rule.counter };
+    end
+    if (candidates == nil) then return nil; end
+
+    for _, counter in ipairs(candidates) do
+        if (counter.type == 'spell') then
+            local ok = can_use_spell_now(counter.name);
+            if (ok) then return counter; end
+        elseif (counter.type == 'blu_spell') then
+            local ok = can_use_blu_spell_now(counter.name);
+            if (ok) then return counter; end
+        end
+        -- Additional counter types (job abilities, items, etc.) can be added here only
+        -- after their Ashita v4 availability checks are verified.
+    end
+
+    return nil;
+end
+
+local function build_context_text(rule, messageOverride)
+    if (rule == nil) then return nil, nil; end
+
+    local counter = get_available_counter(rule);
+    if (rule.only_if_counter_available and counter == nil) then
+        return nil, nil;
+    end
+
+    local text = messageOverride or rule.message or rule.ability or rule.actor or 'WARNING';
+    if (counter ~= nil) then
+        text = text .. '\n' .. (counter.label or counter.name:upper());
+    end
+    return text, counter;
+end
+
+local function raw_message_has_actor(message, actor)
+    if (actor == nil or actor == '') then return true; end
+    if (message == nil) then return false; end
+    return message:lower():find(actor:lower(), 1, true) ~= nil;
+end
+
+local function find_context_ability_rule(eventType, abilityName, rawMessage)
+    if (not warn.settings.context.enabled or abilityName == nil or abilityName == '') then
+        return nil;
+    end
+
+    local lname = abilityName:lower();
+    local generic = nil;
+    for _, rule in ipairs(warn.rules.ability_rules or {}) do
+        if (is_rule_enabled(rule)) then
+        local eventMatches = (rule.event == nil or rule.event == eventType);
+        local abilityMatches = (rule.ability ~= nil and rule.ability:lower() == lname);
+        if (not abilityMatches and rule.aliases ~= nil) then
+            for _, alias in ipairs(rule.aliases) do
+                if (tostring(alias):lower() == lname) then
+                    abilityMatches = true;
+                    break;
+                end
+            end
+        end
+        if (eventMatches and abilityMatches) then
+            if (rule.actor ~= nil) then
+                if (raw_message_has_actor(rawMessage, rule.actor)) then
+                    return rule;
+                end
+            elseif (generic == nil) then
+                generic = rule;
+            end
+        end
+        end
+    end
+    return generic;
+end
+
+local function find_entity_by_name(name, cachedIndex)
+    local entityManager = AshitaCore:GetMemoryManager():GetEntity();
+    if (entityManager == nil) then return nil, nil; end
+
+    if (cachedIndex ~= nil) then
+        local entity = entityManager:GetRawEntity(cachedIndex);
+        if (entity ~= nil and entity.Name == name) then
+            return cachedIndex, entity;
+        end
+    end
+
+    local mapSize = entityManager:GetEntityMapSize();
+    for i = 0, mapSize - 1 do
+        local entity = entityManager:GetRawEntity(i);
+        if (entity ~= nil and entity.Name == name) then
+            return i, entity;
+        end
+    end
+
+    return nil, nil;
+end
+
+local function entity_position(entity)
+    if (entity == nil or entity.Movement == nil or entity.Movement.LocalPosition == nil) then
+        return nil, nil, nil;
+    end
+    local p = entity.Movement.LocalPosition;
+    return tonumber(p.X), tonumber(p.Y), tonumber(p.Z);
+end
+
+local function trigger_context_rule(rule, fallbackName, messageOverride)
+    if (rule == nil or not is_rule_enabled(rule)) then return false; end
+
+    local text = build_context_text(rule, messageOverride);
+    if (text == nil) then return false; end
+
+    warn.active.name = fallbackName or rule.ability or rule.actor or 'WARNING';
+    warn.active.text = text;
+    warn.active.rule_id = rule.id;
+    local effectiveSound = resolve_rule_sound(rule);
+    warn.active.sound = effectiveSound;
+    warn.active.duration = rule.duration;
+    warn.active.startTime = os.clock();
+    warn.active.firing = true;
+
+    if (warn.settings.sound.enabled) then
+        if (warn.settings.context.contextual_sounds) then
+            local sound, overridden = resolve_rule_sound(rule);
+            if (overridden) then
+                -- Explicit 'None' is respected and intentionally suppresses this rule's sound.
+                play_sound_file(sound);
+            elseif (sound ~= nil and sound ~= '') then
+                play_sound_file(sound);
+            else
+                play_selected_sound();
+            end
+        else
+            play_selected_sound();
+        end
+    end
+
+    if (warn.debug) then
+        print(chat.header(addon.name):append(chat.message('Context rule: ' .. tostring(rule.id))));
+    end
+    return true;
+end
+
+--------------------------------------------------------------------------------------------------
+-- Global debuff / crowd-control engine
+--------------------------------------------------------------------------------------------------
+
+local function get_debuff_definition(idOrName)
+    if (idOrName == nil) then return nil; end
+    return warn.debuffs.lookup[tostring(idOrName):lower()];
+end
+
+local function is_debuff_enabled(definition)
+    if (definition == nil) then return false; end
+    ensure_debuff_settings();
+    if (not warn.settings.debuffs.enabled) then return false; end
+    local override = get_debuff_override(definition, false);
+    if (override ~= nil and override.enabled ~= nil) then
+        return override.enabled == true;
+    end
+    return definition.default_enabled ~= false;
+end
+
+local function set_debuff_enabled(definition, enabled)
+    if (definition == nil) then return; end
+    local override = get_debuff_override(definition, true);
+    override.enabled = enabled == true;
+    if (not enabled) then
+        warn.debuffs.tracked[definition.id] = nil;
+        for key, pending in pairs(warn.debuffs.deferred_losses or {}) do
+            if pending.status_id == definition.id then warn.debuffs.deferred_losses[key] = nil; end
+        end
+    end
+    save_settings();
+end
+
+local function debuff_only_if_capable(definition)
+    if (definition == nil) then return false; end
+    local override = get_debuff_override(definition, false);
+    if (override ~= nil and override.only_if_capable ~= nil) then
+        return override.only_if_capable == true;
+    end
+    if (definition.alert_policy == 'smart') then
+        return warn.settings.debuffs.smart_reapply == true;
+    end
+    return false;
+end
+
+local function resolve_debuff_sound(definition)
+    if (definition == nil) then return warn.settings.sound.selected; end
+    local override = get_debuff_override(definition, false);
+    local selected = (override ~= nil and override.sound ~= nil) and tostring(override.sound) or '__global__';
+    if (selected == '__global__' or selected == '__default__' or selected == '') then
+        return definition.sound or warn.settings.sound.selected;
+    end
+    return selected;
+end
+
+local function get_available_debuff_counter(definition)
+    if (definition == nil or definition.counters == nil) then return nil; end
+    for _, counter in ipairs(definition.counters) do
+        if (counter.type == 'spell') then
+            local ok = can_use_spell_now(counter.name);
+            if (ok) then return counter; end
+        elseif (counter.type == 'blu_spell') then
+            local ok = can_use_blu_spell_now(counter.name);
+            if (ok) then return counter; end
+        end
+    end
+    return nil;
+end
+
+local function clear_debuff_status(definition, announce)
+    if (definition == nil) then return; end
+    warn.debuffs.tracked[definition.id] = nil;
+    for key, pending in pairs(warn.debuffs.deferred_losses or {}) do
+        if pending.status_id == definition.id then warn.debuffs.deferred_losses[key] = nil; end
+    end
+    if (announce) then
+        print(chat.header(addon.name):append(chat.message(definition.name .. ' tracker cleared.')));
+    end
+end
+
+local function clear_debuff_tracker(announce)
+    warn.debuffs.tracked = {};
+    warn.debuffs.pending_losses = {};
+    warn.debuffs.deferred_losses = {};
+    warn.debuffs.batch_deadline = 0;
+    if (announce) then
+        print(chat.header(addon.name):append(chat.message('Global debuff tracker cleared.')));
+    end
+end
+
+local function update_debuff_mob_cache(force)
+    ensure_debuff_settings();
+    if (not warn.settings.debuffs.enabled) then return; end
+
+    local now = os.clock();
+    if (not force and now < (warn.debuffs.next_scan or 0)) then return; end
+    warn.debuffs.next_scan = now + (warn.debuffs.scan_interval or 0.75);
+
+    local names = {};
+    local counts = {};
+    local entityManager = AshitaCore:GetMemoryManager():GetEntity();
+    if (entityManager ~= nil) then
+        local mapSize = entityManager:GetEntityMapSize();
+        for i = 0, mapSize - 1 do
+            local entity = entityManager:GetRawEntity(i);
+            if (entity ~= nil and entity.Name ~= nil and entity.Name ~= '' and
+                entity.SpawnFlags ~= nil and bit.band(entity.SpawnFlags, 0x10) ~= 0) then
+                local name = tostring(entity.Name);
+                local key = name:lower();
+                names[key] = name;
+                counts[key] = (counts[key] or 0) + 1;
+            end
+        end
+    end
+
+    warn.debuffs.mob_names = names;
+    warn.debuffs.mob_counts = counts;
+
+    -- Death/despawn is not a debuff-loss event.  Remove entries silently once every
+    -- hostile entity with that name has been absent for several scans.
+    for statusId, statusTable in pairs(warn.debuffs.tracked or {}) do
+        for key, entry in pairs(statusTable) do
+            if (counts[key] ~= nil and counts[key] > 0) then
+                entry.last_present = now;
+            elseif ((now - (entry.last_present or now)) >= 3.0) then
+                statusTable[key] = nil;
+                warn.debuffs.deferred_losses[statusId .. '|' .. key] = nil;
+            end
+        end
+    end
+end
+
+local function get_friendly_name_lookup()
+    local names = {};
+
+    local playerEntity = GetPlayerEntity();
+    if (playerEntity ~= nil and playerEntity.Name ~= nil and playerEntity.Name ~= '') then
+        names[tostring(playerEntity.Name):lower()] = true;
+    end
+
+    local party = AshitaCore:GetMemoryManager():GetParty();
+    if (party ~= nil) then
+        for i = 0, 17 do
+            local name = party:GetMemberName(i);
+            if (name ~= nil and name ~= '') then
+                names[tostring(name):lower()] = true;
+            end
+        end
+    end
+
+    return names;
+end
+
+local function clean_log_subject(text)
+    if (text == nil) then return ''; end
+    local subject = tostring(text);
+
+    -- text_in strings can contain FFXI formatting/control bytes around names.  Removing
+    -- control characters keeps the visible actor text without depending on an unverified
+    -- Ashita string-cleaning helper.
+    subject = subject:gsub('%c', '');
+    subject = subject:gsub('^%s+', ''):gsub('%s+$', '');
+    subject = subject:gsub('^[%p%s]+', function (prefix)
+        -- Keep apostrophes/hyphens that may be part of a real name; only discard obvious
+        -- formatting punctuation before the visible actor.
+        if prefix:find("'", 1, true) or prefix:find('-', 1, true) then return prefix; end
+        return '';
+    end);
+    return subject;
+end
+
+local function find_debuff_subject(rawMessage, rawLower, fragmentStart)
+    -- Prefer a canonical hostile entity name when one is available.  This remains useful
+    -- for same-name mob counting, but it is no longer a hard requirement for recognizing
+    -- a legitimate status transition from the combat log.
+    local best = nil;
+    local bestLen = 0;
+    for key, canonical in pairs(warn.debuffs.mob_names or {}) do
+        local pos = rawLower:find(key, 1, true);
+        if (pos ~= nil and pos < fragmentStart and #key > bestLen) then
+            best = canonical;
+            bestLen = #key;
+        end
+    end
+    if (best ~= nil) then return best; end
+
+    -- Fallback: status messages are actor-first ("Mob wakes up", "Mob is petrified",
+    -- "Mob's Sleep effect wears off").  Use the visible prefix directly.  This fixes
+    -- legitimate loss events being discarded when the entity scan has not yet populated
+    -- or when the text line contains formatting bytes that prevented a cache match.
+    local prefix = tostring(rawMessage):sub(1, math.max(0, fragmentStart - 1));
+    local subject = clean_log_subject(prefix);
+    if (subject == '') then return nil; end
+
+    -- Do not track the player or party/trust members as hostile debuff targets.
+    local friendly = get_friendly_name_lookup();
+    if (friendly[subject:lower()]) then return nil; end
+
+    -- Reject obviously malformed prefixes instead of letting a whole chat sentence become
+    -- a fake mob name.  Real FFXI entity names are comfortably below this limit.
+    if (#subject > 64 or subject:find('\n', 1, true) ~= nil) then return nil; end
+    return subject;
+end
+
+local function find_status_fragment(rawLower, definition, isLoss)
+    local fragments = isLoss and definition.loss_fragments or definition.gain_fragments;
+    if (fragments ~= nil) then
+        for _, fragment in ipairs(fragments) do
+            local wanted = tostring(fragment or ''):lower();
+            if (wanted ~= '') then
+                local pos = rawLower:find(wanted, 1, true);
+                if (pos ~= nil) then return pos; end
+            end
+        end
+    end
+
+    -- Common FFXI status forms.  Definitions only need to provide effect_names to
+    -- benefit from these variants.
+    for _, effect in ipairs(definition.effect_names or {}) do
+        local lowerEffect = tostring(effect):lower();
+        local variants;
+        if (isLoss) then
+            variants = {
+                "'s " .. lowerEffect .. ' effect wears off',
+                ' is no longer affected by ' .. lowerEffect,
+                ' loses the effect of ' .. lowerEffect,
+            };
+        else
+            variants = {
+                ' receives the effect of ' .. lowerEffect,
+                ' is afflicted with ' .. lowerEffect,
+                ' gains the effect of ' .. lowerEffect,
+            };
+        end
+        for _, wanted in ipairs(variants) do
+            local pos = rawLower:find(wanted, 1, true);
+            if (pos ~= nil) then return pos; end
+        end
+    end
+
+    return nil;
+end
+
+local function get_debuff_status_table(definition, create)
+    if (definition == nil) then return nil; end
+    local t = warn.debuffs.tracked[definition.id];
+    if (t == nil and create) then
+        t = {};
+        warn.debuffs.tracked[definition.id] = t;
+    end
+    return t;
+end
+
+local function debuff_mark_gained(definition, name)
+    if (definition == nil or name == nil or name == '') then return; end
+    local now = os.clock();
+    local key = tostring(name):lower();
+    local statusTable = get_debuff_status_table(definition, true);
+    local entry = statusTable[key];
+
+    if (entry == nil) then
+        entry = {
+            name = tostring(name),
+            count = 0,
+            first_applied = now,
+            last_applied = now,
+            last_present = now,
+        };
+        statusTable[key] = entry;
+    end
+
+    -- Same-name mobs cannot be uniquely identified from the status text line.  The
+    -- loaded entity count is a safe upper bound while still allowing AoE CC groups.
+    local ceiling = tonumber(warn.debuffs.mob_counts[key]) or 1;
+    if (entry.count < ceiling) then entry.count = entry.count + 1; end
+    entry.last_applied = now;
+    entry.last_present = now;
+
+    -- Someone reapplied the effect before our character became able to respond.
+    warn.debuffs.deferred_losses[definition.id .. '|' .. key] = nil;
+
+    -- Maintenance effects can be reapplied by another player during the short batching
+    -- window.  Cancel a stale pending maintenance alert in that case.  Crowd-control
+    -- wake/recovery events remain informative and are not canceled.
+    if (definition.alert_policy == 'smart' and #warn.debuffs.pending_losses > 0) then
+        local kept = {};
+        for _, pending in ipairs(warn.debuffs.pending_losses) do
+            if (pending.status_id ~= definition.id or tostring(pending.name):lower() ~= key) then
+                table.insert(kept, pending);
+            end
+        end
+        warn.debuffs.pending_losses = kept;
+    end
+
+    if (warn.debug) then
+        print(chat.header(addon.name):append(chat.message(string.format(
+            'Debuff gained: %s - %s (count %d)', tostring(name), definition.name, entry.count))));
+    end
+end
+
+local function queue_debuff_loss(definition, name, counter)
+    table.insert(warn.debuffs.pending_losses, {
+        status_id = definition.id,
+        definition = definition,
+        name = tostring(name),
+        counter = counter,
+    });
+    local window = tonumber(warn.settings.debuffs.batch_window) or 0.20;
+    warn.debuffs.batch_deadline = os.clock() + math.max(0.0, window);
+end
+
+local function defer_debuff_loss(definition, name)
+    local key = definition.id .. '|' .. tostring(name):lower();
+    warn.debuffs.deferred_losses[key] = {
+        status_id = definition.id,
+        name = tostring(name),
+        lost_at = os.clock(),
+    };
+end
+
+local function debuff_mark_lost(definition, name, forceAlert, allowUntracked)
+    if (definition == nil or name == nil or name == '') then return false; end
+    local key = tostring(name):lower();
+    local statusTable = get_debuff_status_table(definition, false);
+    local entry = statusTable ~= nil and statusTable[key] or nil;
+
+    -- Text-derived loss messages normally require a previously observed gain.  A parsed
+    -- 0x029 battle-message packet is stronger evidence: FFXI sends the origin player the
+    -- status-loss packet directly, so packet processing may allow an otherwise-untracked loss.
+    if (not forceAlert and not allowUntracked and (entry == nil or (entry.count or 0) <= 0)) then return false; end
+
+    if (entry ~= nil) then
+        entry.count = math.max(0, (entry.count or 1) - 1);
+        if (entry.count <= 0) then statusTable[key] = nil; end
+    end
+
+    local counter = get_available_debuff_counter(definition);
+    if (not forceAlert and debuff_only_if_capable(definition) and counter == nil) then
+        defer_debuff_loss(definition, name);
+        if (warn.debug) then
+            print(chat.header(addon.name):append(chat.message(
+                'Debuff lost but alert deferred (no usable counter): ' .. tostring(name) .. ' - ' .. definition.name)));
+        end
+        return true;
+    end
+
+    queue_debuff_loss(definition, name, counter);
+
+    if (warn.debug) then
+        print(chat.header(addon.name):append(chat.message(
+            'Debuff lost: ' .. tostring(name) .. ' - ' .. definition.name)));
+    end
+    return true;
+end
+
+-- Resolve an FFXI status icon / buff resource name to one of Warn's debuff definitions.
+-- Packet 0x029 places the worn-off status icon id in Param1.  Most enfeebles use their
+-- status id as the icon id; the resource lookup keeps the core data-driven where possible.
+local PACKET_DEBUFF_ID_FALLBACK = {
+    [2]  = 'sleep',      -- Sleep I / common sleep icon (Sleep II/Lullaby may display this icon)
+    [3]  = 'poison',
+    [4]  = 'paralyze',
+    [5]  = 'blind',
+    [6]  = 'silence',
+    [7]  = 'petrify',
+    [11] = 'bind',
+    [12] = 'gravity',    -- FFXI status name is Weight; player spell is Gravity
+    [13] = 'slow',
+    [18] = 'petrify',    -- Gradual Petrification
+    [19] = 'sleep',      -- Sleep II if the raw icon is preserved
+    [21] = 'addle',
+};
+
+local function find_packet_debuff_definition(effectIcon)
+    effectIcon = tonumber(effectIcon);
+    if (effectIcon == nil) then return nil, nil; end
+
+    local resMgr = AshitaCore:GetResourceManager();
+    local resourceName = nil;
+    if (resMgr ~= nil) then
+        local ok, value = pcall(function ()
+            return resMgr:GetString('buffs.names', effectIcon);
+        end);
+        if (ok and value ~= nil and tostring(value) ~= '') then
+            resourceName = tostring(value);
+        end
+    end
+
+    if (resourceName ~= nil) then
+        local lower = resourceName:lower();
+        for _, definition in ipairs(warn.debuffs.definitions or {}) do
+            if (tostring(definition.name or ''):lower() == lower) then
+                return definition, resourceName;
+            end
+            for _, effectName in ipairs(definition.effect_names or {}) do
+                if (tostring(effectName):lower() == lower) then
+                    return definition, resourceName;
+                end
+            end
+        end
+    end
+
+    local fallbackId = PACKET_DEBUFF_ID_FALLBACK[effectIcon];
+    if (fallbackId ~= nil) then
+        return get_debuff_definition(fallbackId), resourceName;
+    end
+
+    return nil, resourceName;
+end
+
+local function get_packet_target_name(targetIndex, targetServerId)
+    local entityManager = AshitaCore:GetMemoryManager():GetEntity();
+    if (entityManager == nil) then return nil; end
+
+    -- The packet provides the exact target index, so prefer it over all name heuristics.
+    local entity = entityManager:GetRawEntity(tonumber(targetIndex) or 0);
+    if (entity ~= nil and entity.Name ~= nil and entity.Name ~= '' and
+        entity.SpawnFlags ~= nil and bit.band(entity.SpawnFlags, 0x10) ~= 0) then
+        return tostring(entity.Name);
+    end
+
+    -- Rare fallback if the index could not be resolved: locate the hostile entity by server id.
+    local wantedId = tonumber(targetServerId) or 0;
+    if (wantedId ~= 0) then
+        local mapSize = entityManager:GetEntityMapSize();
+        for i = 0, mapSize - 1 do
+            local candidate = entityManager:GetRawEntity(i);
+            if (candidate ~= nil and candidate.Name ~= nil and candidate.Name ~= '' and
+                candidate.SpawnFlags ~= nil and bit.band(candidate.SpawnFlags, 0x10) ~= 0 and
+                candidate.ServerId ~= nil and tonumber(candidate.ServerId) == wantedId) then
+                return tostring(candidate.Name);
+            end
+        end
+    end
+
+    return nil;
+end
+
+-- Packet: 0x029 - battle/action message.
+-- Layout is the retail FFXI battle-message packet:
+--   0x08 target server id, 0x0C Param1/status icon, 0x16 target index,
+--   0x18 message id. Message 204 = "<target> is no longer <effect>" and
+--   206 = "<target>'s <effect> wears off."
+local function process_debuff_loss_packet(e)
+    ensure_debuff_settings();
+    if (not warn.settings.debuffs.enabled or e == nil or e.id ~= 0x0029) then return; end
+    if (#warn.debuffs.definitions == 0) then return; end
+
+    local data = e.data_modified or e.data_raw;
+    if (data == nil) then return; end
+
+    local ok, targetServerId, effectIcon, targetIndex, messageId = pcall(function ()
+        return struct.unpack('I', data, 0x08 + 0x01),
+               struct.unpack('I', data, 0x0C + 0x01),
+               struct.unpack('H', data, 0x16 + 0x01),
+               struct.unpack('H', data, 0x18 + 0x01);
+    end);
+    if (not ok) then
+        if (warn.debug) then
+            print(chat.header(addon.name):append(chat.error('Failed to parse 0x029 debuff-loss packet.')));
+        end
+        return;
+    end
+
+    -- Standard status-loss messages. Sleep, Petrification, Bind, Silence, etc. generally
+    -- use 204; status definitions without a custom wear-off line use 206.
+    if (messageId ~= 204 and messageId ~= 206) then return; end
+
+    local definition, resourceName = find_packet_debuff_definition(effectIcon);
+    if (definition == nil or not is_debuff_enabled(definition)) then
+        if (warn.debug and definition == nil) then
+            print(chat.header(addon.name):append(chat.message(string.format(
+                '0x029 unhandled status loss: icon=%d effect=%s msg=%d targetIndex=%d',
+                tonumber(effectIcon) or -1, tostring(resourceName or '?'), tonumber(messageId) or -1,
+                tonumber(targetIndex) or -1))));
+        end
+        return;
+    end
+
+    local name = get_packet_target_name(targetIndex, targetServerId);
+    if (name == nil or name == '') then
+        if (warn.debug) then
+            print(chat.header(addon.name):append(chat.message(string.format(
+                '0x029 %s loss recognized but hostile target name was unavailable (targetIndex=%d).',
+                tostring(definition.name), tonumber(targetIndex) or -1))));
+        end
+        return;
+    end
+
+    warn.debuffs.packet_losses = (tonumber(warn.debuffs.packet_losses) or 0) + 1;
+    warn.debuffs.last_packet_loss = string.format('%s - %s', name, tostring(definition.name));
+
+    if (warn.debug) then
+        print(chat.header(addon.name):append(chat.warning(string.format(
+            '0x029 DEBUFF LOSS: %s - %s (icon=%d, msg=%d)', name, tostring(definition.name),
+            tonumber(effectIcon) or -1, tonumber(messageId) or -1))));
+    end
+
+    -- Packet evidence is authoritative enough to alert even if the gain text was filtered
+    -- or used an unknown wording. Smart-maintenance statuses still honor capability checks.
+    debuff_mark_lost(definition, name, false, true);
+end
+
+local function process_global_debuff_message(rawMessage)
+    ensure_debuff_settings();
+    if (not warn.settings.debuffs.enabled or rawMessage == nil or rawMessage == '') then return; end
+    if (#warn.debuffs.definitions == 0) then return; end
+
+    update_debuff_mob_cache(false);
+
+    local rawLower = tostring(rawMessage):lower();
+
+    -- Loss first: "is no longer paralyzed" contains "paralyzed".
+    for _, definition in ipairs(warn.debuffs.definitions) do
+        if (is_debuff_enabled(definition)) then
+            local pos = find_status_fragment(rawLower, definition, true);
+            if (pos ~= nil) then
+                local name = find_debuff_subject(rawMessage, rawLower, pos);
+                if (name ~= nil) then debuff_mark_lost(definition, name, false); end
+                return;
+            end
+        end
+    end
+
+    for _, definition in ipairs(warn.debuffs.definitions) do
+        if (is_debuff_enabled(definition)) then
+            local pos = find_status_fragment(rawLower, definition, false);
+            if (pos ~= nil) then
+                if (definition.id == 'sleep' and rawLower:find('already asleep', 1, true) ~= nil) then
+                    return;
+                end
+                local name = find_debuff_subject(rawMessage, rawLower, pos);
+                if (name ~= nil) then debuff_mark_gained(definition, name); end
+                return;
+            end
+        end
+    end
+
+    -- Debugging status wording is intentionally easy: if retail uses a variant that is
+    -- not yet in data/debuffs.lua, surface the raw candidate line so the database can be
+    -- corrected instead of guessing at additional phrases.
+    if (warn.debug and (
+        rawLower:find(' effect wears off', 1, true) ~= nil or
+        rawLower:find(' is no longer ', 1, true) ~= nil or
+        rawLower:find(' receives the effect of ', 1, true) ~= nil or
+        rawLower:find(' is afflicted with ', 1, true) ~= nil or
+        rawLower:find(' wakes up', 1, true) ~= nil or
+        rawLower:find(' falls asleep', 1, true) ~= nil
+    )) then
+        print(chat.header(addon.name):append(chat.message('Debuff Unmatched: ' .. tostring(rawMessage))));
+    end
+end
+
+local function process_deferred_debuff_losses()
+    if (not warn.settings.debuffs.enabled) then return; end
+    local now = os.clock();
+    if (now < (warn.debuffs.next_deferred_check or 0)) then return; end
+    warn.debuffs.next_deferred_check = now + 0.25;
+
+    for key, pending in pairs(warn.debuffs.deferred_losses or {}) do
+        local definition = get_debuff_definition(pending.status_id);
+        if (definition == nil or not is_debuff_enabled(definition)) then
+            warn.debuffs.deferred_losses[key] = nil;
+        else
+            local mobKey = tostring(pending.name):lower();
+            local statusTable = get_debuff_status_table(definition, false);
+
+            -- Effect was reapplied, mob disappeared, or this stale loss is no longer useful.
+            if (statusTable ~= nil and statusTable[mobKey] ~= nil and (statusTable[mobKey].count or 0) > 0) then
+                warn.debuffs.deferred_losses[key] = nil;
+            elseif (warn.debuffs.mob_counts[mobKey] == nil or (now - (pending.lost_at or now)) > 60.0) then
+                warn.debuffs.deferred_losses[key] = nil;
+            else
+                local counter = get_available_debuff_counter(definition);
+                if (counter ~= nil) then
+                    queue_debuff_loss(definition, pending.name, counter);
+                    warn.debuffs.deferred_losses[key] = nil;
+                end
+            end
+        end
+    end
+end
+
+local function build_single_debuff_loss_text(event)
+    local definition = event.definition;
+    local name = tostring(event.name):upper();
+
+    if definition.id == 'sleep' then
+        local action = (event.counter ~= nil)
+            and tostring(event.counter.label or event.counter.name:upper())
+            or tostring(definition.action or 'RE-SLEEP / CONTROL IT!');
+        return name .. ' WOKE UP!\n' .. action;
+    end
+
+    local text = name .. ': ' .. tostring(definition.loss_label or (definition.name:upper() .. ' WORE OFF!'));
+    if (event.counter ~= nil) then
+        text = text .. '\n' .. tostring(event.counter.label or event.counter.name:upper());
+    elseif (definition.action ~= nil) then
+        text = text .. '\n' .. tostring(definition.action);
+    end
+    return text;
+end
+
+local function find_available_sound(preferred)
+    local wanted = tostring(preferred or ''):lower();
+    for i = 1, #warn.soundFiles do
+        if (tostring(warn.soundFiles[i]):lower() == wanted) then return warn.soundFiles[i]; end
+    end
+    return nil;
+end
+
+local function resolve_critical_debuff_sound(definition)
+    local sound = resolve_debuff_sound(definition);
+    if (sound ~= nil and sound ~= '' and sound ~= 'None') then return sound; end
+
+    -- Critical crowd-control losses should make noise out of the box even when the manual
+    -- ability-warning sound is still set to None.  An explicit per-status "None" override
+    -- is still respected.
+    local override = get_debuff_override(definition, false);
+    if (override ~= nil and tostring(override.sound or '') == 'None') then return 'None'; end
+
+    return find_available_sound('alarm.wav') or
+           find_available_sound('warning.wav') or
+           find_available_sound('alert.wav') or
+           find_available_sound('beep.wav') or 'None';
+end
+
+local function start_critical_debuff_alert(text, definition)
+    warn.critical.text = tostring(text or 'CROWD CONTROL LOST!');
+    warn.critical.sound = resolve_critical_debuff_sound(definition);
+    warn.critical.duration = tonumber(warn.settings.debuffs.alert_duration) or 4.0;
+    warn.critical.startTime = os.clock();
+    warn.critical.firing = true;
+
+    if (warn.settings.debuffs.sound_enabled) then
+        play_sound_file(warn.critical.sound);
+    end
+end
+
+local function render_critical_debuff_alert()
+    if (warn.criticalFont == nil) then return; end
+
+    if (warn.critical.firing and
+        (os.clock() - warn.critical.startTime) >= (tonumber(warn.critical.duration) or 4.0)) then
+        warn.critical.firing = false;
+    end
+
+    if (not warn.critical.firing) then
+        warn.criticalFont:SetVisible(false);
+        return;
+    end
+
+    local text = tostring(warn.critical.text or 'CROWD CONTROL LOST!');
+    warn.criticalFont.font_height = 36;
+    warn.criticalFont.padding = 12;
+    warn.criticalFont.color = 0xFFFFFF00;
+    warn.criticalFont.color_outline = 0xFF000000;
+    warn.criticalFont.background.visible = true;
+    warn.criticalFont.background.color = 0xE0660000;
+    warn.criticalFont:SetText('  ' .. text .. '  ');
+
+    -- Ashita's bundled ItemWatch addon uses imgui.GetIO().DisplaySize for screen-aware
+    -- overlay placement.  Use the same verified v4 pattern to keep this alert centered.
+    local display = imgui.GetIO().DisplaySize;
+    local maxChars = 1;
+    local lineCount = 0;
+    for line in (text .. '\n'):gmatch('(.-)\n') do
+        lineCount = lineCount + 1;
+        if (#line > maxChars) then maxChars = #line; end
+    end
+    local estimatedWidth = math.min(display.x * 0.80, math.max(260, maxChars * 19));
+    local estimatedHeight = math.max(70, lineCount * 48);
+    warn.criticalFont.position_x = math.floor((display.x - estimatedWidth) / 2);
+    warn.criticalFont.position_y = math.floor((display.y - estimatedHeight) / 2);
+
+    local visible = true;
+    if (warn.settings.overlay.blink) then
+        local speed = math.max(0.1, tonumber(warn.settings.overlay.blink_speed) or 4.0);
+        visible = (((os.clock() * speed) % 1.0) < 0.5);
+    end
+    warn.criticalFont:SetVisible(visible);
+end
+
+local function flush_debuff_loss_batch()
+    ensure_debuff_settings();
+    if (#warn.debuffs.pending_losses == 0) then return; end
+    if (os.clock() < (warn.debuffs.batch_deadline or 0)) then return; end
+
+    local events = warn.debuffs.pending_losses;
+    warn.debuffs.pending_losses = {};
+    warn.debuffs.batch_deadline = 0;
+
+    local firstDef = events[1].definition;
+    local sameStatus = true;
+    for i = 2, #events do
+        if events[i].status_id ~= events[1].status_id then
+            sameStatus = false;
+            break;
+        end
+    end
+
+    local text;
+    local sound;
+    if (#events == 1) then
+        text = build_single_debuff_loss_text(events[1]);
+        sound = resolve_debuff_sound(firstDef);
+    elseif (sameStatus) then
+        local grouped, order = {}, {};
+        for _, event in ipairs(events) do
+            local key = tostring(event.name):lower();
+            if (grouped[key] == nil) then
+                grouped[key] = { name = tostring(event.name), count = 0 };
+                table.insert(order, key);
+            end
+            grouped[key].count = grouped[key].count + 1;
+        end
+
+        local parts = {};
+        for i = 1, math.min(#order, 3) do
+            local entry = grouped[order[i]];
+            table.insert(parts, entry.count > 1 and (entry.count .. 'x ' .. entry.name) or entry.name);
+        end
+        if (#order > 3) then table.insert(parts, '...'); end
+
+        local headline = firstDef.multi_loss_label or
+            string.format('%d MONSTERS LOST %s!', #events, tostring(firstDef.name):upper());
+        text = headline .. '\n' .. table.concat(parts, ', ') .. '\n' ..
+            tostring(firstDef.multi_action or firstDef.action or 'RE-CONTROL / REAPPLY!');
+        sound = resolve_debuff_sound(firstDef);
+    else
+        local lines = { string.format('%d DEBUFFS LOST!', #events) };
+        for i = 1, math.min(#events, 4) do
+            local event = events[i];
+            table.insert(lines, tostring(event.name) .. ': ' .. tostring(event.definition.name));
+        end
+        if (#events > 4) then table.insert(lines, '...'); end
+        table.insert(lines, 'CHECK CONTROL / REAPPLY!');
+        text = table.concat(lines, '\n');
+        sound = warn.settings.sound.selected;
+    end
+
+    local useCriticalCenter = sameStatus and firstDef.center_alert == true and
+        warn.settings.debuffs.critical_center == true;
+
+    if (useCriticalCenter) then
+        start_critical_debuff_alert(text, firstDef);
+    else
+        warn.active.name = sameStatus and tostring(firstDef.name) or 'Debuffs';
+        warn.active.text = text;
+        warn.active.rule_id = '__global_debuff_loss__';
+        warn.active.sound = sound;
+        warn.active.duration = tonumber(warn.settings.debuffs.alert_duration) or warn.settings.overlay.duration;
+        warn.active.startTime = os.clock();
+        warn.active.firing = true;
+
+        if (warn.settings.debuffs.sound_enabled) then play_sound_file(sound); end
+    end
+end
+
+local function get_debuff_tracked_count(statusId)
+    local total = 0;
+    if (statusId ~= nil) then
+        local statusTable = warn.debuffs.tracked[tostring(statusId):lower()] or {};
+        for _, entry in pairs(statusTable) do total = total + math.max(0, tonumber(entry.count) or 0); end
+        return total;
+    end
+
+    for _, statusTable in pairs(warn.debuffs.tracked or {}) do
+        for _, entry in pairs(statusTable) do total = total + math.max(0, tonumber(entry.count) or 0); end
+    end
+    return total;
+end
+
+local function print_debuff_tracker(statusId)
+    local filter = statusId ~= nil and get_debuff_definition(statusId) or nil;
+    local total = filter ~= nil and get_debuff_tracked_count(filter.id) or get_debuff_tracked_count(nil);
+    if (total == 0) then
+        local label = filter ~= nil and ('No hostile monsters are currently tracked with ' .. filter.name .. '.')
+            or 'No hostile monster debuffs are currently tracked.';
+        print(chat.header(addon.name):append(chat.message(label)));
+        return;
+    end
+
+    local heading = filter ~= nil and
+        string.format('Tracked %s targets: %d', filter.name, total) or
+        string.format('Tracked hostile debuffs: %d', total);
+    print(chat.header(addon.name):append(chat.message(heading)));
+
+    for _, definition in ipairs(warn.debuffs.definitions) do
+        if (filter == nil or definition.id == filter.id) then
+            local statusTable = warn.debuffs.tracked[definition.id] or {};
+            for _, entry in pairs(statusTable) do
+                if ((entry.count or 0) > 0) then
+                    print(chat.header(addon.name):append(chat.warning(
+                        string.format('  - %s: %s x%d', entry.name, definition.name, entry.count))));
+                end
+            end
+        end
+    end
+end
+
+local function apply_debuff_preset(name)
+    local preset = tostring(name or 'recommended'):lower();
+    for _, definition in ipairs(warn.debuffs.definitions) do
+        local enable;
+        if (preset == 'recommended' or preset == 'default') then
+            enable = definition.recommended == true;
+        elseif (preset == 'cc' or preset == 'crowd' or preset == 'crowd-control') then
+            enable = tostring(definition.category or '') == 'Crowd Control';
+        elseif (preset == 'all') then
+            enable = true;
+        elseif (preset == 'off' or preset == 'none') then
+            enable = false;
+        else
+            return false;
+        end
+        local override = get_debuff_override(definition, true);
+        override.enabled = enable;
+        if (not enable) then warn.debuffs.tracked[definition.id] = nil; end
+    end
+    save_settings();
+    return true;
+end
+
+-- Compatibility wrappers preserve the v1.5.x commands while the implementation is now unified.
+local function clear_sleep_tracker(announce)
+    clear_debuff_status(get_debuff_definition('sleep'), announce);
+end
+
+local function print_sleep_tracker()
+    print_debuff_tracker('sleep');
+end
+
+local function sleep_tracker_mark_asleep(name)
+    local definition = get_debuff_definition('sleep');
+    if (definition ~= nil) then debuff_mark_gained(definition, name); end
+end
+
+local function sleep_tracker_mark_awake(name)
+    local definition = get_debuff_definition('sleep');
+    if (definition ~= nil) then return debuff_mark_lost(definition, name, false); end
+    return false;
+end
+
+local function clear_petrify_tracker(announce)
+    clear_debuff_status(get_debuff_definition('petrify'), announce);
+end
+
+local function print_petrify_tracker()
+    print_debuff_tracker('petrify');
+end
+
+local function petrify_tracker_mark_petrified(name)
+    local definition = get_debuff_definition('petrify');
+    if (definition ~= nil) then debuff_mark_gained(definition, name); end
+end
+
+local function petrify_tracker_mark_recovered(name)
+    local definition = get_debuff_definition('petrify');
+    if (definition ~= nil) then return debuff_mark_lost(definition, name, false); end
+    return false;
+end
+
+-- Maintained-debuff state rules consume encounter-specific log messages that explicitly
+-- indicate a debuff is active or has worn off. This is intentionally data-driven so the
+-- same engine can later track other encounter mechanics without hard-coding boss names.
+local function message_matches_any(rawLower, fragments)
+    if (rawLower == nil or fragments == nil) then return false; end
+    for _, fragment in ipairs(fragments) do
+        local wanted = tostring(fragment or ''):lower();
+        if (wanted ~= '' and rawLower:find(wanted, 1, true) ~= nil) then
+            return true;
+        end
+    end
+    return false;
+end
+
+local function process_maintained_debuff_messages(rawMessage)
+    if (not warn.settings.context.enabled or not warn.settings.context.state_triggers) then return; end
+    if (rawMessage == nil or rawMessage == '') then return; end
+
+    local rawLower = tostring(rawMessage):lower();
+    local now = os.clock();
+
+    for _, rule in ipairs(warn.rules.state_rules or {}) do
+        if (rule.type == 'debuff_maintenance' and is_rule_enabled(rule)) then
+            local state = warn.ruleState[rule.id];
+            -- Encounter messages such as Breadwinner's scratchy-throat messages do not
+            -- include the actor name, so only consume them while the configured actor is present.
+            if (state ~= nil and state.present) then
+                if (message_matches_any(rawLower, rule.gain_messages)) then
+                    state.status_active = true;
+                    state.triggered = true;
+                    state.last_status_change = now;
+                    if (warn.debug) then
+                        print(chat.header(addon.name):append(chat.message(tostring(rule.actor) .. ' tracked debuff: ACTIVE')));
+                    end
+                elseif (message_matches_any(rawLower, rule.loss_messages)) then
+                    state.status_active = false;
+                    state.triggered = false;
+                    state.last_status_change = now;
+
+                    -- Alert immediately if the current character has an available way to
+                    -- reapply the debuff. If not, update_state_rules will retry quietly and
+                    -- fire as soon as a valid counter becomes usable.
+                    if (trigger_context_rule(rule, rule.actor, rule.loss_message or rule.message)) then
+                        state.triggered = true;
+                        state.last_trigger = now;
+                    end
+
+                    if (warn.debug) then
+                        print(chat.header(addon.name):append(chat.message(tostring(rule.actor) .. ' tracked debuff: LOST')));
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function update_state_rules()
+    if (not warn.settings.context.enabled or not warn.settings.context.state_triggers) then return; end
+
+    local now = os.clock();
+    if (now < warn.entityScan.next_scan) then return; end
+
+    -- Build one exact-name lookup and scan the entity map only once. When none of the
+    -- configured state-rule actors exist, fall back to a slow 1-second idle scan so
+    -- Warn does not continuously walk the full entity table while the player is elsewhere.
+    local wanted = {};
+    for _, rule in ipairs(warn.rules.state_rules or {}) do
+        if (is_rule_enabled(rule) and rule.actor ~= nil) then wanted[rule.actor] = true; end
+    end
+
+    local found = {};
+    local entityManager = AshitaCore:GetMemoryManager():GetEntity();
+    if (entityManager ~= nil) then
+        local mapSize = entityManager:GetEntityMapSize();
+        for i = 0, mapSize - 1 do
+            local entity = entityManager:GetRawEntity(i);
+            if (entity ~= nil and entity.Name ~= nil and wanted[entity.Name]) then
+                found[entity.Name] = { index = i, entity = entity };
+            end
+        end
+    end
+    warn.entityScan.entities = found;
+
+    local anyFound = next(found) ~= nil;
+    warn.entityScan.next_scan = now + (anyFound and warn.entityScan.active_interval or warn.entityScan.idle_interval);
+
+    for _, rule in ipairs(warn.rules.state_rules or {}) do
+        local state = warn.ruleState[rule.id];
+        if (is_rule_enabled(rule) and state ~= nil and rule.actor ~= nil) then
+            local foundEntry = found[rule.actor];
+            local entity = foundEntry ~= nil and foundEntry.entity or nil;
+
+            if (entity == nil) then
+                state.index = nil;
+                state.present = false;
+                state.triggered = false;
+                state.last_x = nil;
+                state.last_y = nil;
+                state.last_z = nil;
+                state.armed = true;
+                state.stationary_since = nil;
+                state.status_active = nil;
+                state.last_status_change = 0;
+            else
+                state.index = foundEntry.index;
+
+                if (rule.type == 'entity_present') then
+                    state.present = true;
+                    -- Retry until the rule can actually fire. This matters for rules that
+                    -- require a currently-usable counter (for example Silence being off recast).
+                    if (not state.triggered) then
+                        if (trigger_context_rule(rule, rule.actor)) then
+                            state.triggered = true;
+                            state.last_trigger = now;
+                        end
+                    end
+                elseif (rule.type == 'debuff_maintenance') then
+                    state.present = true;
+                    -- On first sight of the encounter, assume the tracked debuff still needs
+                    -- to be applied. Thereafter, encounter log messages re-arm this rule only
+                    -- when the debuff is explicitly reported as lost.
+                    if (not state.triggered and state.status_active ~= true) then
+                        if (trigger_context_rule(rule, rule.actor)) then
+                            state.triggered = true;
+                            state.last_trigger = now;
+                        end
+                    end
+                elseif (rule.type == 'entity_movement') then
+                    local x, y, z = entity_position(entity);
+                    if (x ~= nil) then
+                        if (state.last_x ~= nil) then
+                            local dx = x - state.last_x;
+                            local dy = y - state.last_y;
+                            local dz = z - state.last_z;
+                            local moved = math.sqrt((dx * dx) + (dy * dy) + (dz * dz));
+                            local threshold = tonumber(rule.movement_threshold) or 0.60;
+                            local rearmSeconds = tonumber(rule.rearm_stationary_seconds) or 8.0;
+
+                            if (warn.debug and moved >= 0.10) then
+                                print(chat.header(addon.name):append(chat.message(string.format('%s moved %.2f yalms', rule.actor, moved))));
+                            end
+
+                            if (moved >= threshold) then
+                                state.stationary_since = nil;
+                                if (state.armed) then
+                                    if (trigger_context_rule(rule, rule.actor)) then
+                                        state.armed = false;
+                                        state.triggered = true;
+                                        state.last_trigger = now;
+                                    end
+                                end
+                            else
+                                if (state.stationary_since == nil) then
+                                    state.stationary_since = now;
+                                elseif (not state.armed and (now - state.stationary_since) >= rearmSeconds) then
+                                    -- Housemaker can charge repeatedly. Rearm only after a long stationary
+                                    -- period so the immediate retreat after Earthshaker does not double-warn.
+                                    state.armed = true;
+                                    state.triggered = false;
+                                    if (warn.debug) then
+                                        print(chat.header(addon.name):append(chat.message(rule.actor .. ' movement trigger re-armed.')));
+                                    end
+                                end
+                            end
+                        end
+
+                        state.last_x = x;
+                        state.last_y = y;
+                        state.last_z = z;
+                        state.present = true;
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function get_catalog_counts()
+    local counts = { total = 0, ambu1 = 0, ambu2 = 0, htmb = 0 };
+    for _, entry in ipairs(warn.rules.catalog or {}) do
+        counts.total = counts.total + 1;
+        if (entry.content == 'Ambuscade' and entry.group == 'Volume 1') then counts.ambu1 = counts.ambu1 + 1; end
+        if (entry.content == 'Ambuscade' and entry.group == 'Volume 2') then counts.ambu2 = counts.ambu2 + 1; end
+        if (entry.content == 'High-Tier Mission Battlefields') then counts.htmb = counts.htmb + 1; end
+    end
+    return counts;
+end
+
+local function print_rule_summary()
+    local a = #(warn.rules.ability_rules or {});
+    local st = #(warn.rules.state_rules or {});
+    local c = get_catalog_counts();
+    print(chat.header(addon.name):append(chat.message(string.format('Loaded %d action rules + %d state rules. Indexed encounters: %d (Ambuscade V1 %d / V2 %d, HTMB %d). Player: %s', a, st, c.total, c.ambu1, c.ambu2, c.htmb, get_player_job_text()))));
+end
+
+local function print_coverage_summary()
+    local c = get_catalog_counts();
+    print(chat.header(addon.name):append(chat.message(string.format('Coverage index: Ambuscade V1 %d, Ambuscade V2 %d, HTMB %d (%d total encounters).', c.ambu1, c.ambu2, c.htmb, c.total))));
+    print(chat.header(addon.name):append(chat.message(string.format('Currently actionable: %d ability/spell rules + %d encounter-state rules.', #(warn.rules.ability_rules or {}), #(warn.rules.state_rules or {})))));
+end
+
+--------------------------------------------------------------------------------------------------
+-- Sound
+--------------------------------------------------------------------------------------------------
+
+-- Use the Windows multimedia API directly instead of relying on unverified Ashita sound helpers.
+-- Ashita v4 runs under LuaJIT on Windows, so FFI is available.
+ffi.cdef[[
+    int __stdcall PlaySoundA(const char* pszSound, void* hmod, unsigned int fdwSound);
+    void* __stdcall FindFirstFileA(const char* lpFileName, void* lpFindFileData);
+    int __stdcall FindNextFileA(void* hFindFile, void* lpFindFileData);
+    int __stdcall FindClose(void* hFindFile);
+]]
+
+local winmm = nil;
+local kernel32 = nil;
+pcall(function ()
+    winmm = ffi.load('winmm');
+end);
+pcall(function ()
+    kernel32 = ffi.load('kernel32');
+end);
+
+local SND_ASYNC     = 0x0001;
+local SND_NODEFAULT = 0x0002;
+local SND_FILENAME  = 0x00020000;
+local FILE_ATTRIBUTE_DIRECTORY = 0x00000010;
+local WIN32_FIND_DATAA_SIZE = 320;
+local WIN32_FIND_DATAA_FILENAME_OFFSET = 44;
+
+local function add_sound_if_valid(files, seen, name)
+    if (name == nil or name == '' or name == '.' or name == '..') then
+        return;
+    end
+
+    local lower = name:lower();
+    if (not lower:match('%.wav$')) then
+        return;
+    end
+    if (seen[lower]) then
+        return;
+    end
+
+    seen[lower] = true;
+    table.insert(files, name);
+end
+
+function get_sound_files()
+    local files = {};
+    local seen = {};
+
+    -- Enumerate every WAV file in the addon's sounds folder using the Windows API.
+    -- This keeps custom sounds completely data-driven; no Lua edits are needed.
+    if (kernel32 ~= nil) then
+        local data = ffi.new('uint8_t[?]', WIN32_FIND_DATAA_SIZE);
+        local pattern = addon.path .. '\\sounds\\*.wav';
+        local handle = kernel32.FindFirstFileA(pattern, data);
+        local invalidHandle = ffi.cast('void*', -1);
+
+        if (handle ~= invalidHandle) then
+            while (true) do
+                local attributes = ffi.cast('uint32_t*', data)[0];
+                if (bit.band(attributes, FILE_ATTRIBUTE_DIRECTORY) == 0) then
+                    local namePtr = ffi.cast('char*', data) + WIN32_FIND_DATAA_FILENAME_OFFSET;
+                    add_sound_if_valid(files, seen, ffi.string(namePtr));
+                end
+
+                if (kernel32.FindNextFileA(handle, data) == 0) then
+                    break;
+                end
+            end
+            kernel32.FindClose(handle);
+        end
+    end
+
+    -- If directory enumeration is unavailable for any reason, preserve the bundled
+    -- files as a safe fallback when they actually exist.
+    if (#files == 0) then
+        local fallback = { 'beep.wav', 'alert.wav', 'warning.wav', 'alarm.wav' };
+        for _, name in ipairs(fallback) do
+            local f = io.open(addon.path .. '\\sounds\\' .. name, 'rb');
+            if (f ~= nil) then
+                f:close();
+                add_sound_if_valid(files, seen, name);
+            end
+        end
+    end
+
+    table.sort(files, function (a, b)
+        return a:lower() < b:lower();
+    end);
+
+    local result = T{ 'None' };
+    for _, name in ipairs(files) do
+        table.insert(result, name);
+    end
+    return result;
+end
+
+function refresh_sound_files(announce)
+    warn.soundFiles = get_sound_files();
+
+    local selectedFound = (warn.settings.sound.selected == nil or warn.settings.sound.selected == 'None');
+    if (not selectedFound) then
+        local wanted = warn.settings.sound.selected:lower();
+        warn.soundFiles:each(function (v)
+            if (v:lower() == wanted) then
+                selectedFound = true;
+                -- Preserve the filename exactly as it exists on disk.
+                warn.settings.sound.selected = v;
+            end
+        end);
+    end
+
+    if (not selectedFound) then
+        warn.settings.sound.selected = 'None';
+        save_settings();
+    end
+
+    -- Validate every per-debuff sound override against the current sounds folder.
+    ensure_debuff_settings();
+    for _, definition in ipairs(warn.debuffs.definitions or {}) do
+        local override = get_debuff_override(definition, false);
+        if (override ~= nil and override.sound ~= nil) then
+            local selected = tostring(override.sound);
+            if (selected ~= '__global__' and selected ~= '__default__' and selected ~= 'None' and selected ~= '') then
+                local found = false;
+                warn.soundFiles:each(function (v)
+                    if (v:lower() == selected:lower()) then
+                        found = true;
+                        override.sound = v;
+                    end
+                end);
+                if (not found) then override.sound = '__global__'; end
+            end
+        end
+    end
+
+    if (announce) then
+        print(chat.header(addon.name):append(chat.message(string.format('Found %d WAV sound file(s).', math.max(0, #warn.soundFiles - 1)))));
+    end
+end
+
+function play_sound_file(sel)
+    if (sel == nil or sel == 'None' or sel == '') then
+        return;
+    end
+
+    if (winmm == nil) then
+        print(chat.header(addon.name):append(chat.error('Sound playback is unavailable (winmm.dll could not be loaded).')));
+        return;
+    end
+
+    local path = addon.path .. '\\sounds\\' .. sel;
+    local f = io.open(path, 'rb');
+    if (f == nil) then
+        print(chat.header(addon.name):append(chat.error('Sound file not found: ')):append(chat.warning(sel)));
+        return;
+    end
+    f:close();
+
+    local ok, result = pcall(function ()
+        return winmm.PlaySoundA(path, nil, bit.bor(SND_FILENAME, SND_ASYNC, SND_NODEFAULT));
+    end);
+
+    if (not ok or result == 0) then
+        print(chat.header(addon.name):append(chat.error('Failed to play sound: ')):append(chat.warning(sel)));
+    end
+end
+
+function play_selected_sound()
+    play_sound_file(warn.settings.sound.selected);
+end
+
+--------------------------------------------------------------------------------------------------
+-- Warning trigger
+--------------------------------------------------------------------------------------------------
+
+function trigger_warning(abilityName)
+    local matched = warn.enabledLookup[abilityName:lower()];
+    if (matched == nil) then
+        return;
+    end
+
+    warn.active.name = matched;
+    warn.active.text = nil;
+    warn.active.rule_id = nil;
+    warn.active.sound = nil;
+    warn.active.duration = nil;
+    warn.active.startTime = os.clock();
+    warn.active.firing = true;
+
+    if (warn.settings.sound.enabled) then
+        play_selected_sound();
+    end
+end
+
+--------------------------------------------------------------------------------------------------
+-- Overlay rendering
+--------------------------------------------------------------------------------------------------
+
+function apply_font_appearance()
+    local s = warn.settings.overlay;
+
+    warn.font.font_height = math.floor(14 * s.size) + 1;
+    warn.font.padding = warn.font.font_height / 4;
+    warn.font.color = s.text_color;
+    warn.font.color_outline = s.outline_color;
+
+    local bgRgb = bit.band(s.bg_color, 0x00FFFFFF);
+    local alphaByte = math.floor((1.0 - s.bg_transparency) * 255);
+    warn.font.background.color = bit.bor(bit.lshift(bit.band(alphaByte, 0xFF), 24), bgRgb);
+    warn.font.background.visible = true;
+end
+
+function render_overlay()
+    if (warn.font == nil) then
+        return;
+    end
+
+    -- Expire an active warning once its duration has passed.
+    if (warn.active.firing) then
+        local duration = warn.active.duration or warn.settings.overlay.duration;
+        if ((os.clock() - warn.active.startTime) >= duration) then
+            warn.active.firing = false;
+        end
+    end
+
+    local previewing = warn.isGuiOpen[1] and not warn.active.firing;
+    local showing = warn.active.firing or previewing;
+
+    if (not showing) then
+        warn.font:SetVisible(false);
+        return;
+    end
+
+    apply_font_appearance();
+
+    local label;
+    if (warn.active.firing) then
+        if (warn.active.text ~= nil and warn.active.text ~= '') then
+            label = warn.active.text;
+        else
+            label = safe_format(warn.settings.overlay.template, warn.active.name:upper());
+        end
+    else
+        label = 'PREVIEW - ' .. safe_format(warn.settings.overlay.template, 'BILGESTORM');
+    end
+
+    warn.font:SetText(' ' .. label .. ' ');
+
+    local visible = true;
+    if (warn.settings.overlay.blink) then
+        local speed = math.max(0.1, warn.settings.overlay.blink_speed);
+        local cyclePos = (os.clock() * speed) % 1.0;
+        visible = cyclePos < 0.5;
+    end
+    warn.font:SetVisible(visible);
+end
+
+--------------------------------------------------------------------------------------------------
+-- GUI: Warning Abilities tab
+--------------------------------------------------------------------------------------------------
+
+function render_abilities_tab()
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Abilities that trigger a warning when a monster readies them.');
+    imgui.InputText('Search', warn.search, 255);
+
+    imgui.BeginGroup();
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'All Abilities');
+    imgui.BeginChild('warn_leftpane', { 340, 330 }, ImGuiChildFlags_Borders);
+
+    local searchTerm = warn.search[1] ~= nil and warn.search[1]:lower() or '';
+    local idx = 1;
+    warn.abilities:each(function (v)
+        local show = true;
+        if (searchTerm ~= '') then
+            show = (v[1]:lower():find(searchTerm, 1, true) ~= nil);
+        end
+        if (show) then
+            local prefix = v[2] and '[X] ' or '[ ] ';
+            if (imgui.Selectable(prefix .. v[1] .. '##warn_ab_' .. idx, warn.selectedIndex[1] == idx)) then
+                warn.selectedIndex[1] = idx;
+            end
+        end
+        idx = idx + 1;
+    end);
+    imgui.EndChild();
+    imgui.EndGroup();
+
+    imgui.SameLine();
+
+    imgui.BeginGroup();
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Warn?');
+    imgui.BeginChild('warn_rightpane', { 250, 330 }, ImGuiChildFlags_Borders);
+    if (warn.selectedIndex[1] > -1 and warn.abilities[warn.selectedIndex[1]] ~= nil) then
+        local entry = warn.abilities[warn.selectedIndex[1]];
+        if (imgui.Checkbox('##warn_toggle', { entry[2] })) then
+            entry[2] = not entry[2];
+            save_ability_settings();
+            rebuild_enabled_lookup();
+        end
+        imgui.TextColored({ 1.0, 1.0, 0.4, 1.0 }, entry[1]);
+    else
+        imgui.TextColored({ 0.6, 0.6, 0.6, 1.0 }, 'Select an ability from the list.');
+    end
+    imgui.EndChild();
+    imgui.EndGroup();
+
+    imgui.Separator();
+
+    if (imgui.Button('Enable All')) then
+        enable_all_abilities();
+    end
+    imgui.SameLine();
+    if (imgui.Button('Disable All')) then
+        disable_all_abilities();
+    end
+    imgui.SameLine();
+    if (imgui.Button('Clear Warnings')) then
+        clear_warning_list();
+    end
+
+    imgui.Separator();
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, string.format('Currently warning on %d ability/abilities:', count_enabled()));
+    imgui.BeginChild('warn_enabled_list', { 0, 100 }, ImGuiChildFlags_Borders);
+    warn.abilities:each(function (v)
+        if (v[2]) then
+            imgui.TextColored({ 0.4, 1.0, 0.4, 1.0 }, v[1]);
+        end
+    end);
+    imgui.EndChild();
+end
+
+--------------------------------------------------------------------------------------------------
+-- GUI: Appearance tab
+--------------------------------------------------------------------------------------------------
+
+function render_appearance_tab()
+    local s = warn.settings.overlay;
+
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Warning Text (use %s for the ability name)');
+    if (imgui.InputText('##warn_template', warn.templateBuf, 128)) then
+        s.template = warn.templateBuf[1];
+        save_settings();
+    end
+
+    imgui.Separator();
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Text Size');
+    local sizeT = { s.size };
+    if (imgui.SliderFloat('##warn_size', sizeT, 0.5, 6.0, '%.1f')) then
+        s.size = sizeT[1];
+        save_settings();
+    end
+
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Text Color');
+    local tc = argb_to_rgba_floats(s.text_color);
+    if (imgui.ColorEdit4('##warn_textcolor', tc)) then
+        s.text_color = rgba_floats_to_argb(tc, 255);
+        save_settings();
+    end
+
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Outline Color');
+    local oc = argb_to_rgba_floats(s.outline_color);
+    if (imgui.ColorEdit4('##warn_outlinecolor', oc)) then
+        s.outline_color = rgba_floats_to_argb(oc, 255);
+        save_settings();
+    end
+
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Background Color');
+    local bc = argb_to_rgba_floats(s.bg_color);
+    if (imgui.ColorEdit4('##warn_bgcolor', bc)) then
+        s.bg_color = rgba_floats_to_argb(bc, 255);
+        save_settings();
+    end
+
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Background Transparency');
+    local bt = { s.bg_transparency };
+    if (imgui.SliderFloat('##warn_bgtrans', bt, 0.0, 1.0, '%.2f')) then
+        s.bg_transparency = bt[1];
+        save_settings();
+    end
+
+    imgui.Separator();
+
+    if (imgui.Checkbox('Blink', { s.blink })) then
+        s.blink = not s.blink;
+        save_settings();
+    end
+
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Blink Speed');
+    local bs = { s.blink_speed };
+    if (imgui.SliderFloat('##warn_blinkspeed', bs, 0.5, 10.0, '%.1f')) then
+        s.blink_speed = bs[1];
+        save_settings();
+    end
+
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Warning Duration (seconds)');
+    local dur = { s.duration };
+    if (imgui.SliderFloat('##warn_duration', dur, 1.0, 15.0, '%.1f')) then
+        s.duration = dur[1];
+        save_settings();
+    end
+
+    imgui.Separator();
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Position');
+    imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 }, 'Tip: you can also drag the warning box on screen to reposition it.');
+
+    local pos = { math.floor(s.position_x), math.floor(s.position_y) };
+    if (imgui.InputInt2('X / Y##warn_position', pos)) then
+        s.position_x = pos[1];
+        s.position_y = pos[2];
+        warn.font.position_x = pos[1];
+        warn.font.position_y = pos[2];
+        save_settings();
+    end
+
+    imgui.Separator();
+    imgui.TextColored({ 0.6, 1.0, 0.6, 1.0 }, 'The box shown while this window is open is a live preview.');
+end
+
+--------------------------------------------------------------------------------------------------
+-- GUI: Context tab
+--------------------------------------------------------------------------------------------------
+
+function render_context_tab()
+    ensure_context_settings();
+    ensure_debuff_settings();
+    ensure_rule_settings();
+    local c = warn.settings.context;
+
+    if (imgui.Checkbox('Enable Contextual Encounter Rules', { c.enabled })) then
+        c.enabled = not c.enabled;
+        save_settings();
+    end
+    imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 }, 'Known mechanics trigger automatically; they do not need to be in the manual warning list.');
+
+    if (imgui.Checkbox('Show Job-Specific Counters', { c.job_counters })) then
+        c.job_counters = not c.job_counters;
+        save_settings();
+    end
+    imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 }, 'Counters appear only when Warn verifies you can actually use them now.');
+
+    if (imgui.Checkbox('Use Contextual / Per-Rule Sounds', { c.contextual_sounds })) then
+        c.contextual_sounds = not c.contextual_sounds;
+        save_settings();
+    end
+    imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 }, 'When disabled, every encounter alert uses the global sound from the Sound tab.');
+
+    if (imgui.Checkbox('Enable Encounter State Triggers', { c.state_triggers })) then
+        c.state_triggers = not c.state_triggers;
+        save_settings();
+    end
+    imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 }, 'State triggers can warn before a move is readied, such as Housemaker beginning its run.');
+
+    imgui.Separator();
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Current Job: ' .. get_player_job_text());
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, string.format('Loaded Rules: %d action / %d state', #(warn.rules.ability_rules or {}), #(warn.rules.state_rules or {})));
+    local coverageCounts = get_catalog_counts();
+    imgui.TextColored({ 0.75, 0.75, 0.75, 1.0 }, string.format('Indexed Encounters: Ambuscade V1 %d / V2 %d / HTMB %d', coverageCounts.ambu1, coverageCounts.ambu2, coverageCounts.htmb));
+
+    if (imgui.Button('Reload Context Rules')) then
+        load_context_rules();
+        print_rule_summary();
+    end
+    imgui.SameLine();
+    if (imgui.Button('Refresh Sounds')) then
+        refresh_sound_files(true);
+    end
+
+    imgui.Separator();
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Encounter Alerts');
+    imgui.InputText('Search Rules##warn_rule_search', warn.ruleSearch, 255);
+
+    local allRules = get_all_context_rules();
+    local searchTerm = warn.ruleSearch[1] ~= nil and warn.ruleSearch[1]:lower() or '';
+
+    imgui.BeginChild('warn_context_rules', { 0, 165 }, ImGuiChildFlags_Borders);
+    for _, rule in ipairs(allRules) do
+        local content = tostring(rule.content or 'Other');
+        local encounter = tostring(rule.encounter or rule.actor or 'General');
+        local display = get_rule_display_name(rule);
+        local haystack = (tostring(rule.id or '') .. ' ' .. content .. ' ' .. encounter .. ' ' .. display .. ' ' .. tostring(rule.message or '')):lower();
+        if (searchTerm == '' or haystack:find(searchTerm, 1, true) ~= nil) then
+            local enabledPrefix = is_rule_enabled(rule) and '[X] ' or '[ ] ';
+            local typePrefix = rule.__rule_type == 'state' and '[STATE] ' or '';
+            local label = enabledPrefix .. typePrefix .. content .. ' / ' .. display .. '##rule_' .. tostring(rule.id);
+            if (imgui.Selectable(label, warn.selectedRuleId == rule.id)) then
+                warn.selectedRuleId = rule.id;
+            end
+        end
+    end
+    imgui.EndChild();
+
+    local selectedRule = find_context_rule_by_id(warn.selectedRuleId);
+    if (selectedRule == nil and #allRules > 0) then
+        selectedRule = allRules[1];
+        warn.selectedRuleId = selectedRule.id;
+    end
+
+    if (selectedRule ~= nil) then
+        imgui.Separator();
+        imgui.TextColored({ 1.0, 1.0, 0.45, 1.0 }, get_rule_display_name(selectedRule));
+        imgui.TextColored({ 0.75, 0.75, 0.75, 1.0 }, 'Content: ' .. tostring(selectedRule.content or 'Other') .. '   Encounter: ' .. tostring(selectedRule.encounter or selectedRule.actor or 'General'));
+        imgui.TextColored({ 0.75, 0.75, 0.75, 1.0 }, 'Rule ID: ' .. tostring(selectedRule.id));
+
+        local enabled = is_rule_enabled(selectedRule);
+        if (imgui.Checkbox('Enable This Alert##warn_rule_enabled', { enabled })) then
+            set_rule_enabled(selectedRule, not enabled);
+        end
+
+        imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Alert Sound Override:');
+        local override = get_rule_override(selectedRule, false);
+        local storedSound = (override ~= nil and override.sound ~= nil) and override.sound or '__default__';
+
+        -- Index 0 is the database default. Remaining entries map to the scanned sounds list,
+        -- including 'None', which intentionally makes this one alert silent.
+        local comboParts = { 'Default (' .. tostring(selectedRule.sound or 'Global Sound') .. ')' };
+        local comboValues = { '__default__' };
+        local soundIndex = 0;
+        for i = 1, #warn.soundFiles do
+            local filename = warn.soundFiles[i];
+            local displayName = filename;
+            if (filename ~= 'None') then
+                displayName = filename:gsub('%.wav$', ''):gsub('%.WAV$', '');
+            end
+            table.insert(comboParts, displayName);
+            table.insert(comboValues, filename);
+            if (storedSound ~= '__default__' and filename:lower() == tostring(storedSound):lower()) then
+                soundIndex = #comboValues - 1;
+            end
+        end
+
+        local soundNames = table.concat(comboParts, '\0') .. '\0\0';
+        local selected = { soundIndex };
+        if (imgui.Combo('##warn_rule_sound_combo', selected, soundNames)) then
+            set_rule_sound_override(selectedRule, comboValues[selected[1] + 1] or '__default__');
+        end
+
+        if (imgui.Button('Test This Alert')) then
+            trigger_context_rule(selectedRule, selectedRule.ability or selectedRule.actor or selectedRule.id);
+        end
+        imgui.SameLine();
+        if (imgui.Button('Test Alert Sound')) then
+            if (warn.settings.context.contextual_sounds) then
+                local sound, overridden = resolve_rule_sound(selectedRule);
+                if (overridden) then
+                    play_sound_file(sound);
+                elseif (sound ~= nil and sound ~= '') then
+                    play_sound_file(sound);
+                else
+                    play_selected_sound();
+                end
+            else
+                play_selected_sound();
+            end
+        end
+        imgui.SameLine();
+        if (imgui.Button('Reset Alert')) then
+            reset_rule_override(selectedRule);
+        end
+
+        if (selectedRule.message ~= nil) then
+            imgui.TextColored({ 0.65, 1.0, 0.65, 1.0 }, 'Message: ' .. tostring(selectedRule.message):gsub('\n', ' / '));
+        end
+    end
+end
+
+--------------------------------------------------------------------------------------------------
+-- GUI: Global Debuffs tab
+--------------------------------------------------------------------------------------------------
+
+local function build_debuff_sound_combo(definition)
+    local override = get_debuff_override(definition, true);
+    local selectedValue = tostring(override.sound or '__global__');
+    local inheritedLabel;
+    if (definition ~= nil and definition.sound ~= nil and tostring(definition.sound) ~= '') then
+        inheritedLabel = 'Default (' .. tostring(definition.sound) .. ')';
+    else
+        inheritedLabel = 'Global Sound (' .. tostring(warn.settings.sound.selected or 'None') .. ')';
+    end
+    local comboParts = { inheritedLabel };
+    local comboValues = { '__global__' };
+    local selectedIndex = 0;
+
+    for i = 1, #warn.soundFiles do
+        local filename = warn.soundFiles[i];
+        local displayName = filename;
+        if (filename ~= 'None') then
+            displayName = filename:gsub('%.wav$', ''):gsub('%.WAV$', '');
+        end
+        table.insert(comboParts, displayName);
+        table.insert(comboValues, filename);
+        if (selectedValue ~= '__global__' and tostring(filename):lower() == selectedValue:lower()) then
+            selectedIndex = #comboValues - 1;
+        end
+    end
+
+    return table.concat(comboParts, '\0') .. '\0\0', comboValues, selectedIndex;
+end
+
+function render_debuffs_tab()
+    ensure_debuff_settings();
+    local cfg = warn.settings.debuffs;
+
+    imgui.BeginChild('warn_debuff_scroll', { 0, 0 }, 0);
+
+    if (imgui.Checkbox('Enable Global Debuff Tracking', { cfg.enabled })) then
+        cfg.enabled = not cfg.enabled;
+        if (not cfg.enabled) then clear_debuff_tracker(false); end
+        save_settings();
+    end
+    imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 },
+        'No setup is required: Recommended statuses are enabled automatically.');
+    imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 },
+        'Warn tracks debuffs on hostile monsters globally, even when they are not your target.');
+
+    if (imgui.Checkbox('Smart Reapply Alerts', { cfg.smart_reapply })) then
+        cfg.smart_reapply = not cfg.smart_reapply;
+        save_settings();
+    end
+    imgui.TextColored({ 0.65, 0.65, 0.65, 1.0 },
+        'For maintenance debuffs, wait to alert until this character can actually reapply the effect.');
+
+    if (imgui.Checkbox('Play Debuff Alert Sounds', { cfg.sound_enabled })) then
+        cfg.sound_enabled = not cfg.sound_enabled;
+        save_settings();
+    end
+    if (imgui.Checkbox('Center Critical Crowd-Control Alerts', { cfg.critical_center })) then
+        cfg.critical_center = not cfg.critical_center;
+        save_settings();
+    end
+    imgui.TextColored({ 0.65, 0.65, 0.65, 1.0 },
+        'Sleep and Petrify loss use a dedicated center-screen alert by default.');
+
+    imgui.Separator();
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Quick Setup');
+    if (imgui.Button('Recommended')) then apply_debuff_preset('recommended'); end
+    imgui.SameLine();
+    if (imgui.Button('Crowd Control')) then apply_debuff_preset('cc'); end
+    imgui.SameLine();
+    if (imgui.Button('All Supported')) then apply_debuff_preset('all'); end
+    imgui.SameLine();
+    if (imgui.Button('Off')) then apply_debuff_preset('off'); end
+
+    imgui.Separator();
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 },
+        string.format('Currently Tracked Debuffs: %d', get_debuff_tracked_count(nil)));
+
+    imgui.BeginChild('warn_debuff_active_list', { 0, 105 }, ImGuiChildFlags_Borders);
+    local activeRows = {};
+    local now = os.clock();
+    for _, definition in ipairs(warn.debuffs.definitions or {}) do
+        local statusTable = warn.debuffs.tracked[definition.id] or {};
+        for _, entry in pairs(statusTable) do
+            if ((entry.count or 0) > 0) then
+                table.insert(activeRows, {
+                    status = definition.name,
+                    name = entry.name,
+                    count = entry.count,
+                    elapsed = math.max(0, now - (entry.last_applied or now)),
+                });
+            end
+        end
+    end
+    table.sort(activeRows, function (a, b)
+        if a.name == b.name then return a.status < b.status; end
+        return tostring(a.name):lower() < tostring(b.name):lower();
+    end);
+    if (#activeRows == 0) then
+        imgui.TextColored({ 0.6, 0.6, 0.6, 1.0 }, 'No hostile debuffs currently tracked.');
+    else
+        for _, row in ipairs(activeRows) do
+            imgui.Text(string.format('%s - %s x%d (%.1fs)', row.name, row.status, row.count, row.elapsed));
+        end
+    end
+    imgui.EndChild();
+
+    imgui.Separator();
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Tracked Statuses');
+
+    local lastCategory = nil;
+    for _, definition in ipairs(warn.debuffs.definitions or {}) do
+        if definition.experimental ~= true then
+            local category = tostring(definition.category or 'Other');
+            if category ~= lastCategory then
+                if (lastCategory ~= nil) then imgui.Separator(); end
+                imgui.TextColored({ 0.75, 0.85, 1.0, 1.0 }, category);
+                lastCategory = category;
+            end
+
+            local enabled = is_debuff_enabled(definition);
+            local toggle = { enabled };
+            if (imgui.Checkbox(definition.name .. '##warn_debuff_toggle_' .. definition.id, toggle)) then
+                set_debuff_enabled(definition, not enabled);
+            end
+            if (definition.alert_policy == 'smart') then
+                imgui.SameLine();
+                imgui.TextColored({ 0.55, 0.75, 0.55, 1.0 }, '(smart)');
+            end
+        end
+    end
+
+    imgui.Separator();
+    imgui.Checkbox('Show Advanced Debuff Options', warn.debuffs.advanced_open);
+
+    if (warn.debuffs.advanced_open[1]) then
+        imgui.TextColored({ 0.65, 0.65, 0.65, 1.0 },
+            'Advanced options include per-status sounds, alert policy, experimental trackers and testing.');
+
+        imgui.BeginGroup();
+        imgui.BeginChild('warn_debuff_advanced_list', { 185, 175 }, ImGuiChildFlags_Borders);
+        for _, definition in ipairs(warn.debuffs.definitions or {}) do
+            local prefix = is_debuff_enabled(definition) and '[X] ' or '[ ] ';
+            if (definition.experimental == true) then prefix = prefix .. '[EXP] '; end
+            if (imgui.Selectable(prefix .. definition.name .. '##warn_debuff_select_' .. definition.id,
+                                 warn.debuffs.selected_id == definition.id)) then
+                warn.debuffs.selected_id = definition.id;
+            end
+        end
+        imgui.EndChild();
+        imgui.EndGroup();
+
+        imgui.SameLine();
+
+        imgui.BeginGroup();
+        imgui.BeginChild('warn_debuff_advanced_detail', { 0, 175 }, ImGuiChildFlags_Borders);
+        local definition = get_debuff_definition(warn.debuffs.selected_id);
+        if (definition ~= nil) then
+            imgui.TextColored({ 1.0, 0.9, 0.45, 1.0 }, definition.name);
+            imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 }, tostring(definition.category or 'Other'));
+            if (definition.experimental == true) then
+                imgui.TextColored({ 1.0, 0.65, 0.35, 1.0 }, 'Experimental log coverage - disabled by default.');
+            end
+
+            local enabled = is_debuff_enabled(definition);
+            if (imgui.Checkbox('Track This Status##warn_debuff_detail_enable', { enabled })) then
+                set_debuff_enabled(definition, not enabled);
+            end
+
+            local onlyCapable = debuff_only_if_capable(definition);
+            if (definition.counters ~= nil and #definition.counters > 0) then
+                if (imgui.Checkbox('Only alert when I can reapply##warn_debuff_only_capable', { onlyCapable })) then
+                    local override = get_debuff_override(definition, true);
+                    override.only_if_capable = not onlyCapable;
+                    save_settings();
+                end
+
+                local counterNames = {};
+                for _, counter in ipairs(definition.counters) do
+                    table.insert(counterNames, tostring(counter.name));
+                end
+                imgui.TextColored({ 0.65, 0.65, 0.65, 1.0 },
+                    'Methods: ' .. table.concat(counterNames, ', '));
+                local available = get_available_debuff_counter(definition);
+                if (available ~= nil) then
+                    imgui.TextColored({ 0.45, 1.0, 0.45, 1.0 },
+                        'Available now: ' .. tostring(available.name));
+                else
+                    imgui.TextColored({ 0.65, 0.65, 0.65, 1.0 }, 'Available now: none detected');
+                end
+            end
+
+            imgui.Text('Alert Sound:');
+            local comboText, comboValues, selectedIndex = build_debuff_sound_combo(definition);
+            local soundSelection = { selectedIndex };
+            if (imgui.Combo('##warn_debuff_sound_combo', soundSelection, comboText)) then
+                local override = get_debuff_override(definition, true);
+                override.sound = comboValues[soundSelection[1] + 1] or '__global__';
+                save_settings();
+            end
+
+            if (imgui.Button('Test Loss Alert##warn_debuff_test')) then
+                local counter = get_available_debuff_counter(definition);
+                queue_debuff_loss(definition, 'Test Monster', counter);
+                warn.debuffs.batch_deadline = 0;
+                flush_debuff_loss_batch();
+            end
+            imgui.SameLine();
+            if (imgui.Button('Clear Tracked##warn_debuff_clear_status')) then
+                clear_debuff_status(definition, true);
+            end
+        else
+            imgui.TextColored({ 0.6, 0.6, 0.6, 1.0 }, 'Select a status.');
+        end
+        imgui.EndChild();
+        imgui.EndGroup();
+    end
+
+    imgui.EndChild();
+end
+
+--------------------------------------------------------------------------------------------------
+-- GUI: Sound tab
+--------------------------------------------------------------------------------------------------
+
+function render_sound_tab()
+    if (imgui.Checkbox('Enable Warning Sound', { warn.settings.sound.enabled })) then
+        warn.settings.sound.enabled = not warn.settings.sound.enabled;
+        save_settings();
+    end
+
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Sound:');
+
+    local soundIndex = 0;
+    local selectedName = warn.settings.sound.selected or 'None';
+    local comboParts = {};
+
+    for i = 1, #warn.soundFiles do
+        local filename = warn.soundFiles[i];
+        local displayName = filename;
+        if (filename ~= 'None') then
+            displayName = filename:gsub('%.wav$', ''):gsub('%.WAV$', '');
+        end
+        table.insert(comboParts, displayName);
+
+        if (filename:lower() == selectedName:lower()) then
+            soundIndex = i - 1;
+        end
+    end
+
+    local soundNames = table.concat(comboParts, '\0') .. '\0\0';
+    local selected = { soundIndex };
+    if (imgui.Combo('##warn_sound_combo', selected, soundNames)) then
+        warn.settings.sound.selected = warn.soundFiles[selected[1] + 1] or 'None';
+        save_settings();
+    end
+
+    if (imgui.Button('Test Sound')) then
+        play_selected_sound();
+    end
+    imgui.SameLine();
+    if (imgui.Button('Refresh Sounds')) then
+        refresh_sound_files(true);
+    end
+
+    imgui.Separator();
+    imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 }, string.format('%d WAV file(s) found in the sounds folder.', math.max(0, #warn.soundFiles - 1)));
+    imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 }, [[Drop any .wav file into warn\sounds\ and click Refresh Sounds.]]);
+    imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 }, 'The new file will appear automatically in the dropdown above.');
+end
+
+--------------------------------------------------------------------------------------------------
+-- GUI: main window
+--------------------------------------------------------------------------------------------------
+
+function render_config_window()
+    if (not warn.isGuiOpen[1]) then
+        return;
+    end
+
+    if (not warn.guiSizeInitialized) then
+        imgui.SetNextWindowSize({ 700, 720, });
+        warn.guiSizeInitialized = true;
+    end
+    imgui.SetNextWindowSizeConstraints({ 600, 560, }, { FLT_MAX, FLT_MAX, });
+    if (imgui.Begin('Warn', warn.isGuiOpen, 0)) then
+        if (imgui.BeginTabBar('##warn_tabbar', ImGuiTabBarFlags_NoCloseWithMiddleMouseButton)) then
+
+            if (imgui.BeginTabItem('Abilities', nil)) then
+                render_abilities_tab();
+                imgui.EndTabItem();
+            end
+
+            if (imgui.BeginTabItem('Encounters', nil)) then
+                render_context_tab();
+                imgui.EndTabItem();
+            end
+
+            if (imgui.BeginTabItem('Appearance', nil)) then
+                render_appearance_tab();
+                imgui.EndTabItem();
+            end
+
+            if (imgui.BeginTabItem('Debuffs', nil)) then
+                render_debuffs_tab();
+                imgui.EndTabItem();
+            end
+
+            if (imgui.BeginTabItem('Sound', nil)) then
+                render_sound_tab();
+                imgui.EndTabItem();
+            end
+
+            imgui.EndTabBar();
+        end
+    end
+    imgui.End();
+end
+
+--------------------------------------------------------------------------------------------------
+-- Events
+--------------------------------------------------------------------------------------------------
+
+ashita.events.register('load', 'load_cb', function ()
+    warn.settings = settings.load(default_settings, 'warn_settings');
+    warn.abilitySettings = settings.load(default_ability_settings, 'warn_abilities');
+    warn.ruleSettings = settings.load(default_rule_settings, 'warn_rule_settings');
+    ensure_context_settings();
+    ensure_debuff_settings();
+    ensure_rule_settings();
+
+    warn.templateBuf = T{ warn.settings.overlay.template };
+
+    warn.font = fonts.new(T{
+        visible = true,
+        font_family = 'Arial',
+        bold = true,
+        font_height = math.floor(14 * warn.settings.overlay.size) + 1,
+        draw_flags = 0x10,
+        color = warn.settings.overlay.text_color,
+        color_outline = warn.settings.overlay.outline_color,
+        position_x = warn.settings.overlay.position_x,
+        position_y = warn.settings.overlay.position_y,
+        padding = 4,
+        background = T{
+            visible = true,
+            color = warn.settings.overlay.bg_color,
+            scale_x = 1.0,
+            scale_y = 1.0,
+            width = 0.0,
+            height = 0.0,
+        },
+    });
+
+    warn.criticalFont = fonts.new(T{
+        visible = false,
+        font_family = 'Arial',
+        bold = true,
+        font_height = 36,
+        draw_flags = 0x10,
+        color = 0xFFFFFF00,
+        color_outline = 0xFF000000,
+        position_x = 400,
+        position_y = 300,
+        padding = 12,
+        background = T{
+            visible = true,
+            color = 0xE0660000,
+            scale_x = 1.0,
+            scale_y = 1.0,
+            width = 0.0,
+            height = 0.0,
+        },
+    });
+
+    load_abilities();
+    load_context_rules();
+    load_debuff_definitions();
+    refresh_sound_files(false);
+end);
+
+ashita.events.register('unload', 'unload_cb', function ()
+    if (warn.font ~= nil) then
+        warn.font:destroy();
+        warn.font = nil;
+    end
+    if (warn.criticalFont ~= nil) then
+        warn.criticalFont:destroy();
+        warn.criticalFont = nil;
+    end
+end);
+
+ashita.events.register('command', 'command_cb', function (e)
+    local args = e.command:args();
+    if (#args == 0 or not args[1]:any('/warn')) then
+        return;
+    end
+
+    e.blocked = true;
+
+    -- /warn - toggle the GUI.
+    if (#args == 1) then
+        warn.isGuiOpen[1] = not warn.isGuiOpen[1];
+        if (warn.isGuiOpen[1]) then
+            refresh_sound_files(false);
+        end
+        return;
+    end
+
+    local sub = args[2]:lower();
+
+    if (sub == 'debuffs' or sub == 'debuff') then
+        ensure_debuff_settings();
+        if (#args == 2 or args[3]:lower() == 'list') then
+            print_debuff_tracker(nil);
+            return;
+        end
+
+        local action = args[3]:lower();
+        if (action == 'clear') then
+            clear_debuff_tracker(true);
+            return;
+        end
+
+        if (action == 'reload') then
+            clear_debuff_tracker(false);
+            if (load_debuff_definitions()) then
+                refresh_sound_files(false);
+                print(chat.header(addon.name):append(chat.message(string.format(
+                    'Reloaded %d global debuff definitions.', #warn.debuffs.definitions))));
+            end
+            return;
+        end
+
+        if (action == 'preset') then
+            local preset = (#args >= 4) and args[4] or 'recommended';
+            if (apply_debuff_preset(preset)) then
+                print(chat.header(addon.name):append(chat.message('Global debuff preset: ')):append(chat.warning(preset)));
+            else
+                print(chat.header(addon.name):append(chat.error(
+                    'Unknown preset. Use recommended, cc, all, or off.')));
+            end
+            return;
+        end
+
+        if (action == 'test' or action == 'gain') then
+            if (#args < 4) then
+                print(chat.header(addon.name):append(chat.error('Usage: /warn debuffs test <status> [mob name]')));
+                return;
+            end
+            local definition = get_debuff_definition(args[4]);
+            if (definition == nil) then
+                print(chat.header(addon.name):append(chat.error('Unknown debuff: ' .. tostring(args[4]))));
+                return;
+            end
+            local name = (#args >= 5) and table.concat(args, ' ', 5) or 'Test Monster';
+            debuff_mark_gained(definition, name);
+            print(chat.header(addon.name):append(chat.message(
+                name .. ' marked with ' .. definition.name .. ' for testing.')));
+            return;
+        end
+
+        if (action == 'lose' or action == 'loss') then
+            if (#args < 4) then
+                print(chat.header(addon.name):append(chat.error('Usage: /warn debuffs lose <status> [mob name]')));
+                return;
+            end
+            local definition = get_debuff_definition(args[4]);
+            if (definition == nil) then
+                print(chat.header(addon.name):append(chat.error('Unknown debuff: ' .. tostring(args[4]))));
+                return;
+            end
+            local name = (#args >= 5) and table.concat(args, ' ', 5) or 'Test Monster';
+            local statusTable = get_debuff_status_table(definition, false);
+            if (statusTable == nil or statusTable[name:lower()] == nil) then
+                debuff_mark_gained(definition, name);
+            end
+            debuff_mark_lost(definition, name, false);
+            warn.debuffs.batch_deadline = 0;
+            flush_debuff_loss_batch();
+            return;
+        end
+
+        print(chat.header(addon.name):append(chat.error(
+            'Usage: /warn debuffs [list|clear|reload|preset <recommended|cc|all|off>|test <status> [mob]|lose <status> [mob]]')));
+        return;
+    end
+
+    -- Backward-compatible Sleep commands now use the unified Debuff Engine.
+    if (sub == 'sleep') then
+        local definition = get_debuff_definition('sleep');
+        if (definition == nil) then return; end
+        if (#args == 2 or args[3]:lower() == 'list') then
+            print_debuff_tracker('sleep');
+            return;
+        end
+        local action = args[3]:lower();
+        if (action == 'clear') then
+            clear_debuff_status(definition, true);
+            return;
+        end
+        local name = (#args >= 4) and table.concat(args, ' ', 4) or 'Test Monster';
+        if (action == 'test') then
+            debuff_mark_gained(definition, name);
+            print(chat.header(addon.name):append(chat.message(
+                name .. ' marked asleep for testing. Use /warn sleep wake ' .. name)));
+            return;
+        end
+        if (action == 'wake') then
+            local statusTable = get_debuff_status_table(definition, false);
+            if (statusTable == nil or statusTable[name:lower()] == nil) then debuff_mark_gained(definition, name); end
+            debuff_mark_lost(definition, name, false);
+            warn.debuffs.batch_deadline = 0;
+            flush_debuff_loss_batch();
+            return;
+        end
+        print(chat.header(addon.name):append(chat.error('Usage: /warn sleep [list|clear|test <mob>|wake <mob>]')));
+        return;
+    end
+
+    -- Backward-compatible Petrify commands now use the unified Debuff Engine.
+    if (sub == 'petrify') then
+        local definition = get_debuff_definition('petrify');
+        if (definition == nil) then return; end
+        if (#args == 2 or args[3]:lower() == 'list') then
+            print_debuff_tracker('petrify');
+            return;
+        end
+        local action = args[3]:lower();
+        if (action == 'clear') then
+            clear_debuff_status(definition, true);
+            return;
+        end
+        local name = (#args >= 4) and table.concat(args, ' ', 4) or 'Test Monster';
+        if (action == 'test') then
+            debuff_mark_gained(definition, name);
+            print(chat.header(addon.name):append(chat.message(
+                name .. ' marked petrified for testing. Use /warn petrify recover ' .. name)));
+            return;
+        end
+        if (action == 'recover') then
+            local statusTable = get_debuff_status_table(definition, false);
+            if (statusTable == nil or statusTable[name:lower()] == nil) then debuff_mark_gained(definition, name); end
+            debuff_mark_lost(definition, name, false);
+            warn.debuffs.batch_deadline = 0;
+            flush_debuff_loss_batch();
+            return;
+        end
+        print(chat.header(addon.name):append(chat.error('Usage: /warn petrify [list|clear|test <mob>|recover <mob>]')));
+        return;
+    end
+
+    if (sub == 'capability') then
+        if (#args < 3) then
+            print(chat.header(addon.name):append(chat.error('Usage: /warn capability <spell name>')));
+            return;
+        end
+        local spellName = table.concat(args, ' ', 3);
+        local resource = find_spell_resource(spellName);
+        local ok, spell, reason;
+        if (resource ~= nil and tonumber(resource.Skill) == 43) then
+            ok, spell, reason = can_use_blu_spell_now(spellName);
+        else
+            ok, spell, reason = can_use_spell_now(spellName);
+        end
+        local canonical = (spell ~= nil and spell.Name ~= nil and spell.Name[1] ~= nil) and tostring(spell.Name[1]) or spellName;
+        if (ok) then
+            print(chat.header(addon.name):append(chat.message(canonical .. ': ')):append(chat.warning('AVAILABLE NOW')));
+        else
+            print(chat.header(addon.name):append(chat.message(canonical .. ': ')):append(chat.warning('NOT AVAILABLE - ' .. tostring(reason))));
+        end
+        return;
+    end
+
+    if (sub == 'teststate') then
+        if (#args < 4) then
+            print(chat.header(addon.name):append(chat.error('Usage: /warn teststate <rule id> <gained|lost>')));
+            return;
+        end
+        local rule = find_context_rule_by_id(args[3]);
+        if (rule == nil or rule.type ~= 'debuff_maintenance') then
+            print(chat.header(addon.name):append(chat.error('Maintained-debuff rule not found: ' .. tostring(args[3]))));
+            return;
+        end
+        local state = warn.ruleState[rule.id];
+        if (state == nil) then return; end
+        local change = args[4]:lower();
+        if (change == 'gained') then
+            state.status_active = true;
+            state.triggered = true;
+            print(chat.header(addon.name):append(chat.message(tostring(rule.actor) .. ': tracked debuff marked ACTIVE.')));
+        elseif (change == 'lost') then
+            state.status_active = false;
+            state.triggered = false;
+            if (not trigger_context_rule(rule, rule.actor, rule.loss_message or rule.message)) then
+                print(chat.header(addon.name):append(chat.warning('Loss state recorded, but no configured counter is currently usable.')));
+            else
+                state.triggered = true;
+            end
+        else
+            print(chat.header(addon.name):append(chat.error('State must be gained or lost.')));
+        end
+        return;
+    end
+
+    if (sub == 'sounds') then
+        refresh_sound_files(true);
+        return;
+    end
+
+    if (sub == 'rules') then
+        print_rule_summary();
+        return;
+    end
+
+    if (sub == 'coverage') then
+        print_coverage_summary();
+        return;
+    end
+
+    if (sub == 'rule') then
+        if (#args < 3) then
+            print(chat.header(addon.name):append(chat.error('Usage: /warn rule <rule id>  OR  /warn rule reset <rule id>')));
+            return;
+        end
+
+        if (args[3]:lower() == 'reset') then
+            if (#args < 4) then
+                print(chat.header(addon.name):append(chat.error('Usage: /warn rule reset <rule id>')));
+                return;
+            end
+            local ruleId = table.concat(args, ' ', 4);
+            local rule = find_context_rule_by_id(ruleId);
+            if (rule == nil) then
+                print(chat.header(addon.name):append(chat.error('Context rule not found: ')):append(chat.warning(ruleId)));
+                return;
+            end
+            reset_rule_override(rule);
+            print(chat.header(addon.name):append(chat.message('Reset alert settings for: ')):append(chat.warning(tostring(rule.id))));
+            return;
+        end
+
+        local ruleId = table.concat(args, ' ', 3);
+        local rule = find_context_rule_by_id(ruleId);
+        if (rule == nil) then
+            print(chat.header(addon.name):append(chat.error('Context rule not found: ')):append(chat.warning(ruleId)));
+            return;
+        end
+        warn.selectedRuleId = rule.id;
+        warn.ruleSearch[1] = '';
+        warn.isGuiOpen[1] = true;
+        refresh_sound_files(false);
+        return;
+    end
+
+    if (sub == 'testrule') then
+        if (#args < 3) then
+            print(chat.header(addon.name):append(chat.error('Usage: /warn testrule <rule id>')));
+            return;
+        end
+        local wanted = table.concat(args, ' ', 3):lower();
+        local found = nil;
+        for _, rule in ipairs(warn.rules.ability_rules or {}) do
+            if (tostring(rule.id):lower() == wanted) then found = rule; break; end
+        end
+        if (found == nil) then
+            for _, rule in ipairs(warn.rules.state_rules or {}) do
+                if (tostring(rule.id):lower() == wanted) then found = rule; break; end
+            end
+        end
+        if (found == nil) then
+            print(chat.header(addon.name):append(chat.error('Context rule not found: ')):append(chat.warning(wanted)));
+            return;
+        end
+        if (not trigger_context_rule(found, found.ability or found.actor or found.id)) then
+            print(chat.header(addon.name):append(chat.warning('Rule did not fire because its required player counter is not currently available.')));
+        end
+        return;
+    end
+
+    if (sub == 'list') then
+        print_warning_list();
+        return;
+    end
+
+    if (sub == 'clear') then
+        clear_warning_list();
+        return;
+    end
+
+    if (sub == 'debug') then
+        warn.debug = not warn.debug;
+        print(chat.header(addon.name):append(chat.message('Debug logging: ')):append(chat.warning(warn.debug and 'ON' or 'OFF')));
+        return;
+    end
+
+    if (sub == 'test') then
+        if (#args < 3) then
+            print(chat.header(addon.name):append(chat.error('Usage: /warn test <ability name>')));
+            return;
+        end
+
+        local testName = table.concat(args, ' ', 3);
+        local entry = find_ability_entry(testName);
+        if (entry ~= nil) then
+            warn.active.name = entry[1];
+        else
+            warn.active.name = testName;
+        end
+        warn.active.text = nil;
+        warn.active.rule_id = nil;
+        warn.active.sound = nil;
+        warn.active.duration = nil;
+        warn.active.startTime = os.clock();
+        warn.active.firing = true;
+
+        if (warn.settings.sound.enabled) then
+            play_selected_sound();
+        end
+        return;
+    end
+
+    if (sub == 'off') then
+        if (#args < 3) then
+            print(chat.header(addon.name):append(chat.error('Usage: /warn off <ability name>')));
+            return;
+        end
+        set_ability_enabled(table.concat(args, ' ', 3), false);
+        return;
+    end
+
+    -- Otherwise treat the remaining arguments as an ability name to add.
+    set_ability_enabled(table.concat(args, ' ', 2), true);
+end);
+
+ashita.events.register('text_in', 'text_in_cb', function (e)
+    if (e.message == nil or e.message == '') then
+        return;
+    end
+
+    -- Global crowd-control and encounter-state messages are not necessarily ability/cast
+    -- lines, so process them before attempting to parse readies / uses / casting verbs.
+    process_global_debuff_message(e.message);
+    process_maintained_debuff_messages(e.message);
+
+    -- Distinguish the warning phase from the resolution phase. This lets a rule warn
+    -- early on dangerous readies, while other rules (such as Waning Vigor) can wait
+    -- until the move actually resolves before telling the player to resume attacking.
+    local eventType = nil;
+    local verbStart = nil;
+    local verbEnd = nil;
+
+    verbStart, verbEnd = string.find(e.message, 'readies', 1, true);
+    if (verbStart ~= nil) then
+        eventType = 'readies';
+    else
+        verbStart, verbEnd = string.find(e.message, 'uses', 1, true);
+        if (verbStart ~= nil) then
+            eventType = 'uses';
+        else
+            verbStart, verbEnd = string.find(e.message, 'starts casting', 1, true);
+            if (verbStart ~= nil) then
+                eventType = 'starts_casting';
+            else
+                verbStart, verbEnd = string.find(e.message, 'casts', 1, true);
+                if (verbStart ~= nil) then
+                    eventType = 'casts';
+                else
+                    verbStart, verbEnd = string.find(e.message, 'ready', 1, true);
+                    if (verbStart ~= nil) then eventType = 'readies'; end
+                end
+            end
+        end
+    end
+
+    if (eventType == nil) then
+        return;
+    end
+
+    local abilityName = '';
+    if (string.len(e.message) >= (verbEnd + 2)) then
+        abilityName = string.sub(e.message, verbEnd + 2, math.max(verbEnd + 2, string.len(e.message) - 3));
+        abilityName = trim(abilityName);
+    end
+
+    if (warn.debug) then
+        print(chat.header(addon.name):append(chat.message('Raw: ' .. tostring(e.message))));
+        print(chat.header(addon.name):append(chat.message('Event: ' .. tostring(eventType) .. ' / Parsed ability: ' .. tostring(abilityName))));
+    end
+
+    if (abilityName == '') then
+        return;
+    end
+
+    -- Contextual rules have priority over the manual warning list.
+    local rule = find_context_ability_rule(eventType, abilityName, e.message);
+    if (rule ~= nil and trigger_context_rule(rule, abilityName)) then
+        if (warn.debug) then
+            print(chat.header(addon.name):append(chat.message('Context Match: YES (' .. tostring(rule.id) .. ')')));
+        end
+        return;
+    end
+
+    -- Manual warnings remain a readies-only system so they do not fire twice.
+    if (eventType == 'readies') then
+        local matched = warn.enabledLookup[abilityName:lower()];
+        if (warn.debug) then
+            print(chat.header(addon.name):append(chat.message('Manual Match: ' .. (matched ~= nil and 'YES' or 'NO'))));
+        end
+        if (matched ~= nil) then
+            trigger_warning(abilityName);
+        end
+    end
+end);
+
+ashita.events.register('packet_in', 'packet_in_cb', function (e)
+    -- Use the raw battle-message packet as the primary debuff-loss signal.  This avoids
+    -- dependency on chat filters, localization wording, or whether text_in sees the line.
+    if (e.id == 0x0029) then
+        process_debuff_loss_packet(e);
+    end
+
+    -- Packet 0x000A is the zone-enter packet. Global debuff state is zone-local and
+    -- must never survive zoning, otherwise same-named monsters could false-alert.
+    if (e.id == 0x000A) then
+        clear_debuff_tracker(false);
+        warn.debuffs.mob_names = {};
+        warn.debuffs.mob_counts = {};
+        warn.debuffs.next_scan = 0;
+    end
+end);
+
+ashita.events.register('d3d_present', 'present_cb', function ()
+    -- If the user dragged the overlay on screen, persist the new position.
+    if (warn.font ~= nil and warn.settings ~= nil) then
+        local x = math.floor(warn.font.position_x);
+        local y = math.floor(warn.font.position_y);
+        local sx = math.floor(warn.settings.overlay.position_x);
+        local sy = math.floor(warn.settings.overlay.position_y);
+
+        if (x ~= sx or y ~= sy) then
+            warn.settings.overlay.position_x = x;
+            warn.settings.overlay.position_y = y;
+            save_settings();
+        end
+    end
+
+    update_debuff_mob_cache(false);
+    update_state_rules();
+    process_deferred_debuff_losses();
+    flush_debuff_loss_batch();
+    render_config_window();
+    render_overlay();
+    render_critical_debuff_alert();
+end);
