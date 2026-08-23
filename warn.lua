@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '2.1.0';
+addon.version   = '2.1.1';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -370,6 +370,15 @@ local function save_ability_settings()
     end);
     warn.abilitySettings.enabled = enabledMap;
     settings.save('warn_abilities');
+end
+
+-- Ashita v4 builds differ in which optional Dear ImGui helpers they expose.
+-- Font scaling is cosmetic, so use it when available and otherwise retain the
+-- user's normal ImGui font without allowing the UI callback to fail.
+local function set_ui_font_scale(value)
+    if (type(imgui.SetWindowFontScale) == 'function') then
+        imgui.SetWindowFontScale(value);
+    end
 end
 
 local function save_learning_data()
@@ -3437,23 +3446,23 @@ local function render_warning_card(state, is_critical, previewing)
         draw:AddLine({ win_x + 18 * scale, win_y + 31 * scale }, { win_x + width - 18 * scale, win_y + 31 * scale }, imgui.GetColorU32(color_with_alpha(active_theme.brass_dim, entry_alpha)), math.max(1, scale));
 
         imgui.SetCursorScreenPos({ win_x + 18 * scale, win_y + 8 * scale });
-        imgui.SetWindowFontScale(0.82 * scale);
+        set_ui_font_scale(0.82 * scale);
         imgui.TextColored(color_with_alpha(severity_color, entry_alpha), severity:upper());
         local prediction = tostring(state.prediction or 'reactive');
         imgui.SameLine();
         imgui.TextColored(color_with_alpha(active_theme.text_muted, entry_alpha), prediction == 'readiness' and '  READINESS ESTIMATE' or '  REACTIVE');
 
         imgui.SetCursorScreenPos({ win_x + 22 * scale, win_y + 40 * scale });
-        imgui.SetWindowFontScale(1.28 * scale);
+        set_ui_font_scale(1.28 * scale);
         imgui.TextColored(color_with_alpha(active_theme.text, entry_alpha), title);
         if (detail ~= '') then
             imgui.SetCursorScreenPos({ win_x + 22 * scale, win_y + 72 * scale });
-            imgui.SetWindowFontScale(0.86 * scale);
+            set_ui_font_scale(0.86 * scale);
             imgui.PushTextWrapPos(win_x + width - 22 * scale);
             imgui.TextWrapped(detail);
             imgui.PopTextWrapPos();
         end
-        imgui.SetWindowFontScale(1.0);
+        set_ui_font_scale(1.0);
 
         if (previewing) then
             local moved_x, moved_y = imgui.GetWindowPos();
@@ -4644,11 +4653,11 @@ function render_config_window()
             imgui.SameLine();
         end
         imgui.BeginGroup();
-        imgui.SetWindowFontScale(1.28 * scale);
+        set_ui_font_scale(1.28 * scale);
         imgui.TextColored(warn.ui.theme.brass_hover, 'WARN');
-        imgui.SetWindowFontScale(0.82 * scale);
+        set_ui_font_scale(0.82 * scale);
         imgui.TextColored(warn.ui.theme.text_muted, 'VANA\'DIEL TACTICAL ENCOUNTER ASSISTANT');
-        imgui.SetWindowFontScale(1.0);
+        set_ui_font_scale(1.0);
         imgui.EndGroup();
         imgui.SameLine();
         imgui.SetCursorPosX(math.max(imgui.GetCursorPosX(), window_width - 45 * scale));

@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.1
+- Fixed the dashboard failing during `d3d_present` on Ashita v4 builds that do not expose the optional `imgui.SetWindowFontScale` helper.
+- Font scaling is now capability-checked and gracefully falls back to the user's normal ImGui font while preserving panel, launcher, alert-card, and resolution scaling.
+
 ## 2.1.0
 - Replaced the stock configuration shell with a custom Vana'diel tactical dashboard using deep indigo panels, brass detailing, engraved corner accents, and two primary **Encounters / Options** controls.
 - Added a cleaned transparent brass-and-indigo **W** medallion as a clickable, draggable, and hideable launcher.
