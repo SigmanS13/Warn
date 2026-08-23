@@ -75,6 +75,7 @@ The default configuration is intended to work without setup; advanced customizat
 - `/warn debuffs preset <recommended|cc|all|off>` — quick global-debuff setup
 - `/warn debuffs test <status> [mob]` — simulate a debuff application
 - `/warn debuffs lose <status> [mob]` — simulate that tracked debuff ending
+- `/warn debuffs soon <status> [mob]` — simulate the estimated pre-expire warning
 - `/warn debuffs reload` — reload `data/debuffs.lua`
 
 ## Custom sounds
@@ -208,6 +209,32 @@ Dead/despawned monsters are removed silently, and all global debuff state clears
 
 The older `/warn sleep ...` and `/warn petrify ...` commands remain as compatibility aliases and
 now operate through the same Debuff Engine.
+
+
+## v1.7 tracked debuff timers
+
+Warn now keeps an estimated timer for tracked global debuffs when the status definition provides a duration. These timers are deliberately **advisory**:
+
+- a positive countdown such as `~0:42` means the effect is believed active and the estimate has not expired;
+- `? +12s` means the estimate has expired, but Warn has not seen a real wear-off/removal packet yet;
+- a real 0x029 status-loss packet or recognized loss text still removes the tracked state and triggers the normal loss alert.
+
+This avoids the XIUI-style failure mode where an icon disappears solely because a guessed timer ended. Warn keeps showing the debuff as uncertain until better evidence arrives.
+
+Crowd-control statuses such as Sleep, Petrify, Bind and Gravity can also warn shortly before their estimated expiry. The default is 5 seconds. Configure this in `/warn` → **Debuffs**:
+
+- **Show Estimated Durations**
+- **Warn Before Crowd Control Expires**
+- global seconds-before-expiry slider
+- per-status estimated duration and per-status pre-expire toggle in Advanced options
+
+Test with:
+
+```text
+/warn debuffs test sleep Test Monster
+/warn debuffs soon sleep Test Monster
+/warn debuffs lose sleep Test Monster
+```
 
 ## Maintained debuff alerts
 

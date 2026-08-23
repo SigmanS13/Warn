@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '1.6.2';
+addon.version   = '1.7.0';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -31,7 +31,7 @@ addon.link      = '';
         /warn rule <rule id>         - Select a contextual rule in the GUI.
         /warn rule reset <rule id>   - Reset a rule's custom enable/sound settings.
         /warn teststate <rule id> <gained|lost> - Test a maintained-debuff state transition.
-        /warn debuffs [list|clear|preset|test|lose|reload] - Manage global debuff tracking.
+        /warn debuffs [list|clear|preset|test|lose|soon|reload] - Manage global debuff tracking.
         /warn sleep [list|clear|test|wake] - Compatibility alias for the Sleep debuff tracker.
         /warn petrify [list|clear|test|recover] - Compatibility alias for the Petrify debuff tracker.
 --]]
@@ -78,6 +78,9 @@ local default_settings = T{
         critical_center  = true,     -- Sleep/Petrify loss uses a dedicated center-screen alert
         batch_window     = 0.20,     -- group near-simultaneous status losses
         alert_duration   = 4.0,
+        show_estimates   = true,     -- show estimated remaining time / overdue state in the Debuffs tab
+        prewarn_enabled  = true,     -- warn shortly before important crowd-control estimates expire
+        prewarn_seconds  = 5.0,
         statuses         = T{},      -- per-status user overrides keyed by stable status id
     },
 
@@ -202,6 +205,8 @@ warn = T{
         scan_interval = 0.75,
         pending_losses = {},
         batch_deadline = 0,
+        pending_prewarns = {},      -- estimated-expiry warnings for crowd control
+        prewarn_deadline = 0,
         deferred_losses = {},      -- smart maintenance losses waiting for a usable counter
         next_deferred_check = 0,
         selected_id = 'sleep',
@@ -422,6 +427,9 @@ local function ensure_debuff_settings()
             critical_center = true,
             batch_window = 0.20,
             alert_duration = 4.0,
+            show_estimates = true,
+            prewarn_enabled = true,
+            prewarn_seconds = 5.0,
             statuses = T{},
         };
     end
@@ -432,6 +440,9 @@ local function ensure_debuff_settings()
     if (warn.settings.debuffs.critical_center == nil) then warn.settings.debuffs.critical_center = true; end
     if (warn.settings.debuffs.batch_window == nil) then warn.settings.debuffs.batch_window = 0.20; end
     if (warn.settings.debuffs.alert_duration == nil) then warn.settings.debuffs.alert_duration = 4.0; end
+    if (warn.settings.debuffs.show_estimates == nil) then warn.settings.debuffs.show_estimates = true; end
+    if (warn.settings.debuffs.prewarn_enabled == nil) then warn.settings.debuffs.prewarn_enabled = true; end
+    if (warn.settings.debuffs.prewarn_seconds == nil) then warn.settings.debuffs.prewarn_seconds = 5.0; end
     if (warn.settings.debuffs.statuses == nil) then warn.settings.debuffs.statuses = T{}; end
 end
 
@@ -1039,6 +1050,9 @@ local function set_debuff_enabled(definition, enabled)
         for key, pending in pairs(warn.debuffs.deferred_losses or {}) do
             if pending.status_id == definition.id then warn.debuffs.deferred_losses[key] = nil; end
         end
+        for key, pending in pairs(warn.debuffs.pending_prewarns or {}) do
+            if pending.status_id == definition.id then warn.debuffs.pending_prewarns[key] = nil; end
+        end
     end
     save_settings();
 end
@@ -1085,6 +1099,9 @@ local function clear_debuff_status(definition, announce)
     for key, pending in pairs(warn.debuffs.deferred_losses or {}) do
         if pending.status_id == definition.id then warn.debuffs.deferred_losses[key] = nil; end
     end
+    for key, pending in pairs(warn.debuffs.pending_prewarns or {}) do
+        if pending.status_id == definition.id then warn.debuffs.pending_prewarns[key] = nil; end
+    end
     if (announce) then
         print(chat.header(addon.name):append(chat.message(definition.name .. ' tracker cleared.')));
     end
@@ -1093,8 +1110,10 @@ end
 local function clear_debuff_tracker(announce)
     warn.debuffs.tracked = {};
     warn.debuffs.pending_losses = {};
+    warn.debuffs.pending_prewarns = {};
     warn.debuffs.deferred_losses = {};
     warn.debuffs.batch_deadline = 0;
+    warn.debuffs.prewarn_deadline = 0;
     if (announce) then
         print(chat.header(addon.name):append(chat.message('Global debuff tracker cleared.')));
     end
@@ -1137,6 +1156,7 @@ local function update_debuff_mob_cache(force)
             elseif ((now - (entry.last_present or now)) >= 3.0) then
                 statusTable[key] = nil;
                 warn.debuffs.deferred_losses[statusId .. '|' .. key] = nil;
+                warn.debuffs.pending_prewarns[statusId .. '|' .. key] = nil;
             end
         end
     end
@@ -1253,6 +1273,72 @@ local function find_status_fragment(rawLower, definition, isLoss)
     return nil;
 end
 
+
+local function get_debuff_estimated_duration(definition)
+    if (definition == nil) then return nil; end
+    local override = get_debuff_override(definition, false);
+    if (override ~= nil and override.duration ~= nil) then
+        local value = tonumber(override.duration);
+        if (value ~= nil and value > 0) then return value; end
+    end
+    local value = tonumber(definition.duration or definition.default_duration or definition.estimate_duration);
+    if (value ~= nil and value > 0) then return value; end
+    return nil;
+end
+
+local function set_debuff_estimated_duration(definition, duration)
+    if (definition == nil) then return; end
+    local override = get_debuff_override(definition, true);
+    local value = tonumber(duration);
+    if (value == nil or value <= 0) then
+        override.duration = nil;
+    else
+        override.duration = math.floor(value + 0.5);
+    end
+    save_settings();
+end
+
+local function debuff_prewarn_enabled(definition)
+    if (definition == nil) then return false; end
+    local override = get_debuff_override(definition, false);
+    if (override ~= nil and override.prewarn ~= nil) then return override.prewarn == true; end
+    if (definition.prewarn ~= nil) then return definition.prewarn == true; end
+    return definition.category == 'Crowd Control' or definition.center_alert == true;
+end
+
+local function format_seconds(seconds)
+    seconds = tonumber(seconds) or 0;
+    if (seconds < 0) then seconds = 0; end
+    seconds = math.floor(seconds + 0.5);
+    if (seconds >= 60) then
+        local mins = math.floor(seconds / 60);
+        local secs = seconds % 60;
+        return string.format('%d:%02d', mins, secs);
+    end
+    return tostring(seconds) .. 's';
+end
+
+local function get_debuff_time_text(entry, now)
+    if (entry == nil or entry.expires_at == nil) then return 'observed'; end
+    now = now or os.clock();
+    local remaining = tonumber(entry.expires_at) - now;
+    if (remaining > 0) then
+        return '~' .. format_seconds(remaining);
+    end
+    return '? +' .. format_seconds(-remaining);
+end
+
+local function queue_debuff_prewarn(definition, entry)
+    if (definition == nil or entry == nil) then return; end
+    table.insert(warn.debuffs.pending_prewarns, {
+        status_id = definition.id,
+        definition = definition,
+        name = tostring(entry.name or 'Unknown'),
+        remaining = math.max(0, math.floor(((entry.expires_at or os.clock()) - os.clock()) + 0.5)),
+    });
+    warn.debuffs.prewarn_deadline = os.clock() + math.max(0.0, tonumber(warn.settings.debuffs.batch_window) or 0.20);
+end
+
 local function get_debuff_status_table(definition, create)
     if (definition == nil) then return nil; end
     local t = warn.debuffs.tracked[definition.id];
@@ -1277,6 +1363,10 @@ local function debuff_mark_gained(definition, name)
             first_applied = now,
             last_applied = now,
             last_present = now,
+            estimated_duration = nil,
+            expires_at = nil,
+            uncertain = false,
+            prewarned = false,
         };
         statusTable[key] = entry;
     end
@@ -1287,6 +1377,11 @@ local function debuff_mark_gained(definition, name)
     if (entry.count < ceiling) then entry.count = entry.count + 1; end
     entry.last_applied = now;
     entry.last_present = now;
+    entry.uncertain = false;
+    entry.prewarned = false;
+    local estimated = get_debuff_estimated_duration(definition);
+    entry.estimated_duration = estimated;
+    entry.expires_at = (estimated ~= nil) and (now + estimated) or nil;
 
     -- Someone reapplied the effect before our character became able to respond.
     warn.debuffs.deferred_losses[definition.id .. '|' .. key] = nil;
@@ -1335,6 +1430,7 @@ local function debuff_mark_lost(definition, name, forceAlert, allowUntracked)
     local key = tostring(name):lower();
     local statusTable = get_debuff_status_table(definition, false);
     local entry = statusTable ~= nil and statusTable[key] or nil;
+    warn.debuffs.pending_prewarns[definition.id .. '|' .. key] = nil;
 
     -- Text-derived loss messages normally require a previously observed gain.  A parsed
     -- 0x029 battle-message packet is stronger evidence: FFXI sends the origin player the
@@ -1561,6 +1657,70 @@ local function process_global_debuff_message(rawMessage)
     )) then
         print(chat.header(addon.name):append(chat.message('Debuff Unmatched: ' .. tostring(rawMessage))));
     end
+end
+
+
+local function flush_debuff_prewarn_batch()
+    ensure_debuff_settings();
+    if (#warn.debuffs.pending_prewarns == 0) then return; end
+    if (os.clock() < (warn.debuffs.prewarn_deadline or 0)) then return; end
+
+    local events = warn.debuffs.pending_prewarns;
+    warn.debuffs.pending_prewarns = {};
+    warn.debuffs.prewarn_deadline = 0;
+
+    local lines = {};
+    if (#events == 1) then
+        local event = events[1];
+        table.insert(lines, tostring(event.name):upper() .. ': ' .. tostring(event.definition.name):upper() .. ' EXPIRING SOON');
+        table.insert(lines, '~' .. format_seconds(event.remaining or 0) .. ' ESTIMATED');
+        if (event.definition.action ~= nil) then table.insert(lines, tostring(event.definition.action)); end
+    else
+        table.insert(lines, string.format('%d CROWD-CONTROL EFFECTS EXPIRING SOON', #events));
+        for i = 1, math.min(#events, 4) do
+            local event = events[i];
+            table.insert(lines, string.format('%s: %s ~%s', tostring(event.name), tostring(event.definition.name), format_seconds(event.remaining or 0)));
+        end
+        if (#events > 4) then table.insert(lines, '...'); end
+    end
+
+    warn.active.name = 'Debuff Timer';
+    warn.active.text = table.concat(lines, '\n');
+    warn.active.rule_id = '__global_debuff_prewarn__';
+    warn.active.sound = resolve_debuff_sound(events[1].definition);
+    warn.active.duration = tonumber(warn.settings.debuffs.alert_duration) or warn.settings.overlay.duration;
+    warn.active.startTime = os.clock();
+    warn.active.firing = true;
+
+    if (warn.settings.debuffs.sound_enabled) then play_sound_file(warn.active.sound); end
+end
+
+local function process_debuff_estimates()
+    ensure_debuff_settings();
+    if (not warn.settings.debuffs.enabled) then return; end
+
+    local now = os.clock();
+    local prewarnSeconds = math.max(0, tonumber(warn.settings.debuffs.prewarn_seconds) or 5.0);
+
+    for _, definition in ipairs(warn.debuffs.definitions or {}) do
+        local statusTable = warn.debuffs.tracked[definition.id] or {};
+        for _, entry in pairs(statusTable) do
+            if ((entry.count or 0) > 0 and entry.expires_at ~= nil) then
+                local remaining = tonumber(entry.expires_at) - now;
+                if (remaining <= 0) then
+                    entry.uncertain = true;
+                elseif (warn.settings.debuffs.prewarn_enabled == true and
+                        debuff_prewarn_enabled(definition) and
+                        entry.prewarned ~= true and
+                        remaining <= prewarnSeconds) then
+                    entry.prewarned = true;
+                    queue_debuff_prewarn(definition, entry);
+                end
+            end
+        end
+    end
+
+    flush_debuff_prewarn_batch();
 end
 
 local function process_deferred_debuff_losses()
@@ -1804,7 +1964,8 @@ local function print_debuff_tracker(statusId)
             for _, entry in pairs(statusTable) do
                 if ((entry.count or 0) > 0) then
                     print(chat.header(addon.name):append(chat.warning(
-                        string.format('  - %s: %s x%d', entry.name, definition.name, entry.count))));
+                        string.format('  - %s: %s x%d [%s]', entry.name, definition.name, entry.count,
+                            get_debuff_time_text(entry, os.clock())))));
                 end
             end
         end
@@ -2708,6 +2869,25 @@ function render_debuffs_tab()
     imgui.TextColored({ 0.65, 0.65, 0.65, 1.0 },
         'Sleep and Petrify loss use a dedicated center-screen alert by default.');
 
+    if (imgui.Checkbox('Show Estimated Durations', { cfg.show_estimates })) then
+        cfg.show_estimates = not cfg.show_estimates;
+        save_settings();
+    end
+    if (imgui.Checkbox('Warn Before Crowd Control Expires', { cfg.prewarn_enabled })) then
+        cfg.prewarn_enabled = not cfg.prewarn_enabled;
+        save_settings();
+    end
+    if (cfg.prewarn_enabled) then
+        imgui.SameLine();
+        local prewarn = { tonumber(cfg.prewarn_seconds) or 5.0 };
+        if (imgui.SliderFloat('Seconds##warn_debuff_prewarn_seconds', prewarn, 1.0, 30.0, '%.0f')) then
+            cfg.prewarn_seconds = prewarn[1];
+            save_settings();
+        end
+    end
+    imgui.TextColored({ 0.65, 0.65, 0.65, 1.0 },
+        'Timers are estimates: when they expire, Warn shows ? until a real loss/removal event confirms the status is gone.');
+
     imgui.Separator();
     imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Quick Setup');
     if (imgui.Button('Recommended')) then apply_debuff_preset('recommended'); end
@@ -2734,6 +2914,8 @@ function render_debuffs_tab()
                     name = entry.name,
                     count = entry.count,
                     elapsed = math.max(0, now - (entry.last_applied or now)),
+                    time_text = get_debuff_time_text(entry, now),
+                    uncertain = entry.uncertain == true,
                 });
             end
         end
@@ -2746,7 +2928,12 @@ function render_debuffs_tab()
         imgui.TextColored({ 0.6, 0.6, 0.6, 1.0 }, 'No hostile debuffs currently tracked.');
     else
         for _, row in ipairs(activeRows) do
-            imgui.Text(string.format('%s - %s x%d (%.1fs)', row.name, row.status, row.count, row.elapsed));
+            local suffix = cfg.show_estimates and (' [' .. row.time_text .. ']') or string.format(' (%.1fs)', row.elapsed);
+            if (row.uncertain and cfg.show_estimates) then
+                imgui.TextColored({ 1.0, 0.75, 0.25, 1.0 }, string.format('%s - %s x%d%s', row.name, row.status, row.count, suffix));
+            else
+                imgui.Text(string.format('%s - %s x%d%s', row.name, row.status, row.count, suffix));
+            end
         end
     end
     imgui.EndChild();
@@ -2811,6 +2998,19 @@ function render_debuffs_tab()
             local enabled = is_debuff_enabled(definition);
             if (imgui.Checkbox('Track This Status##warn_debuff_detail_enable', { enabled })) then
                 set_debuff_enabled(definition, not enabled);
+            end
+
+            local duration = { get_debuff_estimated_duration(definition) or 60.0 };
+            if (imgui.SliderFloat('Estimated Duration##warn_debuff_duration', duration, 1.0, 600.0, '%.0f sec')) then
+                set_debuff_estimated_duration(definition, duration[1]);
+            end
+            imgui.TextColored({ 0.60, 0.60, 0.60, 1.0 }, 'Used only for countdown display and pre-expire warnings; real loss packets still win.');
+
+            local prewarn = debuff_prewarn_enabled(definition);
+            if (imgui.Checkbox('Warn before estimate expires##warn_debuff_prewarn_status', { prewarn })) then
+                local override = get_debuff_override(definition, true);
+                override.prewarn = not prewarn;
+                save_settings();
             end
 
             local onlyCapable = debuff_only_if_capable(definition);
@@ -3089,6 +3289,24 @@ ashita.events.register('command', 'command_cb', function (e)
             return;
         end
 
+        if (action == 'soon') then
+            if (#args < 4) then
+                print(chat.header(addon.name):append(chat.error('Usage: /warn debuffs soon <status> [mob name]')));
+                return;
+            end
+            local definition = get_debuff_definition(args[4]);
+            if (definition == nil) then
+                print(chat.header(addon.name):append(chat.error('Unknown debuff: ' .. tostring(args[4]))));
+                return;
+            end
+            local name = (#args >= 5) and table.concat(args, ' ', 5) or 'Test Monster';
+            local fake = { name = name, expires_at = os.clock() + (tonumber(warn.settings.debuffs.prewarn_seconds) or 5.0) };
+            queue_debuff_prewarn(definition, fake);
+            warn.debuffs.prewarn_deadline = 0;
+            flush_debuff_prewarn_batch();
+            return;
+        end
+
         if (action == 'test' or action == 'gain') then
             if (#args < 4) then
                 print(chat.header(addon.name):append(chat.error('Usage: /warn debuffs test <status> [mob name]')));
@@ -3102,7 +3320,8 @@ ashita.events.register('command', 'command_cb', function (e)
             local name = (#args >= 5) and table.concat(args, ' ', 5) or 'Test Monster';
             debuff_mark_gained(definition, name);
             print(chat.header(addon.name):append(chat.message(
-                name .. ' marked with ' .. definition.name .. ' for testing.')));
+                name .. ' marked with ' .. definition.name .. ' for testing. Estimated: ' ..
+                tostring(get_debuff_time_text((get_debuff_status_table(definition, false) or {})[name:lower()], os.clock())))));
             return;
         end
 
@@ -3128,7 +3347,7 @@ ashita.events.register('command', 'command_cb', function (e)
         end
 
         print(chat.header(addon.name):append(chat.error(
-            'Usage: /warn debuffs [list|clear|reload|preset <recommended|cc|all|off>|test <status> [mob]|lose <status> [mob]]')));
+            'Usage: /warn debuffs [list|clear|reload|preset <recommended|cc|all|off>|test <status> [mob]|lose <status> [mob]|soon <status> [mob]]')));
         return;
     end
 
@@ -3493,6 +3712,7 @@ ashita.events.register('d3d_present', 'present_cb', function ()
 
     update_debuff_mob_cache(false);
     update_state_rules();
+    process_debuff_estimates();
     process_deferred_debuff_losses();
     flush_debuff_loss_batch();
     render_config_window();

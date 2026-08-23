@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.7.0
+- Added estimated timers to the Global Debuff Engine.
+- Tracked debuffs now show remaining time in the Debuffs tab and `/warn debuffs` output.
+- Estimated expiry no longer removes tracked state; expired estimates become uncertain (`?`) until a real loss/removal signal arrives.
+- Added pre-expire warnings for crowd-control effects before their estimated timer ends.
+- Added global Debuffs options: `Show Estimated Durations`, `Warn Before Crowd Control Expires`, and a seconds-before-expiry slider.
+- Added per-status Advanced options for estimated duration and pre-expire warnings.
+- Added `/warn debuffs soon <status> [mob]` to test the pre-expire warning path.
+- Updated `data/debuffs.lua` with baseline estimated durations for all shipped status definitions.
+
 ## 1.6.2
 - Fixed live debuff-loss detection by parsing FFXI incoming packet 0x029 directly.
 - Sleep/Petrify no longer depend on combat-log text wording or chat-filter visibility to alert when the client is sent the wear-off event.
