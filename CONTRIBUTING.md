@@ -77,3 +77,12 @@ Use:
 ```
 
 to test changes without editing the encounter database.
+## Learned timer observations
+
+Warn's Learning tab records local timing evidence, not verified encounter truth. A learned
+candidate should only be promoted into the curated rule database after confirming that the
+interval is repeatable and understanding any phase, HP, difficulty, or random-usage conditions.
+
+When proposing a learned timer, include the actor, ability, observed intervals, sample count,
+content context, and an external verification source when one exists. Do not convert a local
+suggestion directly into a verified rule solely because its confidence score is high.

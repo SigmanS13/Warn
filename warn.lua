@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '1.7.0';
+addon.version   = '1.8.0';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -71,6 +71,13 @@ local default_settings = T{
         contextual_sounds = true,
         state_triggers    = true,
     },
+    learning = T{
+        enabled              = true,
+        minimum_uses         = 3,
+        minimum_interval     = 5,
+        maximum_interval     = 900,
+        confidence_threshold = 0.80,
+    },
     debuffs = T{
         enabled          = true,
         smart_reapply    = true,     -- maintenance alerts wait until this character can act
@@ -108,6 +115,13 @@ local default_ability_settings = T{
 -- stores the user's preferences (enabled state and sound override) by stable rule id.
 local default_rule_settings = T{
     overrides = T{},
+};
+
+-- Learned observations are kept separate from curated rules and normal preferences.
+-- A database update can therefore never overwrite local evidence or approvals.
+local default_learning_data = T{
+    version = 1,
+    entries = T{},
 };
 
 --------------------------------------------------------------------------------------------------
@@ -162,6 +176,7 @@ warn = T{
     settings = nil,
     abilitySettings = nil,
     ruleSettings = nil,
+    learningData = nil,
 
     abilities = T{},        -- array of T{ name, enabledBool }
     enabledLookup = T{},    -- map: lower(name) -> original-case name
@@ -215,6 +230,16 @@ warn = T{
         advanced_open = T{ false },
     },
 
+    timerLearning = T{
+        engine = nil,
+        entries = {},
+        active_timers = {},
+        dirty = false,
+        next_save = 0,
+        selected_key = nil,
+        show_ignored = T{ false },
+    },
+
     active = T{
         firing = false,
         name = '',
@@ -263,6 +288,16 @@ local function save_ability_settings()
     settings.save('warn_abilities');
 end
 
+local function save_learning_data()
+    if (warn.learningData == nil) then
+        warn.learningData = T{ version = 1, entries = T{} };
+    end
+    if (warn.learningData.entries == nil) then warn.learningData.entries = T{}; end
+    warn.learningData.entries = warn.timerLearning.entries or T{};
+    settings.save('warn_learning');
+    warn.timerLearning.dirty = false;
+end
+
 settings.register('warn_settings', 'warn_settings_update', function (s)
     if (s ~= nil) then warn.settings = s; end
     settings.save('warn_settings');
@@ -276,6 +311,15 @@ end);
 settings.register('warn_rule_settings', 'warn_rule_settings_update', function (s)
     if (s ~= nil) then warn.ruleSettings = s; end
     settings.save('warn_rule_settings');
+end);
+
+settings.register('warn_learning', 'warn_learning_update', function (s)
+    if (s ~= nil) then
+        warn.learningData = s;
+        if (warn.learningData.entries == nil) then warn.learningData.entries = T{}; end
+        warn.timerLearning.entries = warn.learningData.entries;
+    end
+    settings.save('warn_learning');
 end);
 
 --------------------------------------------------------------------------------------------------
@@ -416,6 +460,46 @@ local function ensure_context_settings()
     if (warn.settings.context.job_counters == nil) then warn.settings.context.job_counters = true; end
     if (warn.settings.context.contextual_sounds == nil) then warn.settings.context.contextual_sounds = true; end
     if (warn.settings.context.state_triggers == nil) then warn.settings.context.state_triggers = true; end
+end
+
+local function ensure_learning_settings()
+    if (warn.settings.learning == nil) then
+        warn.settings.learning = T{
+            enabled = true,
+            minimum_uses = 3,
+            minimum_interval = 5,
+            maximum_interval = 900,
+            confidence_threshold = 0.80,
+        };
+    end
+
+    local learning = warn.settings.learning;
+    if (learning.enabled == nil) then learning.enabled = true; end
+    if (learning.minimum_uses == nil) then learning.minimum_uses = 3; end
+    if (learning.minimum_interval == nil) then learning.minimum_interval = 5; end
+    if (learning.maximum_interval == nil) then learning.maximum_interval = 900; end
+    if (learning.confidence_threshold == nil) then learning.confidence_threshold = 0.80; end
+end
+
+local function load_timer_learning()
+    local path = addon.path .. '/data/timer_learning.lua';
+    local chunk, loadErr = loadfile(path);
+    if (chunk == nil) then
+        print(chat.header(addon.name):append(chat.error('Failed to load data/timer_learning.lua: ' .. tostring(loadErr))));
+        return false;
+    end
+
+    local ok, engine = pcall(chunk);
+    if (not ok or type(engine) ~= 'table' or type(engine.record) ~= 'function') then
+        print(chat.header(addon.name):append(chat.error('Invalid data/timer_learning.lua: ' .. tostring(engine))));
+        return false;
+    end
+
+    warn.timerLearning.engine = engine;
+    if (warn.learningData == nil) then warn.learningData = T{ version = 1, entries = T{} }; end
+    if (warn.learningData.entries == nil) then warn.learningData.entries = T{}; end
+    warn.timerLearning.entries = warn.learningData.entries;
+    return true;
 end
 
 local function ensure_debuff_settings()
@@ -936,7 +1020,7 @@ local function find_context_ability_rule(eventType, abilityName, rawMessage)
             for _, alias in ipairs(rule.aliases) do
                 if (tostring(alias):lower() == lname) then
                     abilityMatches = true;
-                    break;
+                    break
                 end
             end
         end
@@ -1121,7 +1205,8 @@ end
 
 local function update_debuff_mob_cache(force)
     ensure_debuff_settings();
-    if (not warn.settings.debuffs.enabled) then return; end
+    ensure_learning_settings();
+    if (not warn.settings.debuffs.enabled and not warn.settings.learning.enabled) then return; end
 
     local now = os.clock();
     if (not force and now < (warn.debuffs.next_scan or 0)) then return; end
@@ -1149,14 +1234,16 @@ local function update_debuff_mob_cache(force)
 
     -- Death/despawn is not a debuff-loss event.  Remove entries silently once every
     -- hostile entity with that name has been absent for several scans.
-    for statusId, statusTable in pairs(warn.debuffs.tracked or {}) do
-        for key, entry in pairs(statusTable) do
-            if (counts[key] ~= nil and counts[key] > 0) then
-                entry.last_present = now;
-            elseif ((now - (entry.last_present or now)) >= 3.0) then
-                statusTable[key] = nil;
-                warn.debuffs.deferred_losses[statusId .. '|' .. key] = nil;
-                warn.debuffs.pending_prewarns[statusId .. '|' .. key] = nil;
+    if (warn.settings.debuffs.enabled) then
+        for statusId, statusTable in pairs(warn.debuffs.tracked or {}) do
+            for key, entry in pairs(statusTable) do
+                if (counts[key] ~= nil and counts[key] > 0) then
+                    entry.last_present = now;
+                elseif ((now - (entry.last_present or now)) >= 3.0) then
+                    statusTable[key] = nil;
+                    warn.debuffs.deferred_losses[statusId .. '|' .. key] = nil;
+                    warn.debuffs.pending_prewarns[statusId .. '|' .. key] = nil;
+                end
             end
         end
     end
@@ -1867,7 +1954,7 @@ local function flush_debuff_loss_batch()
     for i = 2, #events do
         if events[i].status_id ~= events[1].status_id then
             sameStatus = false;
-            break;
+            break
         end
     end
 
@@ -1993,6 +2080,134 @@ local function apply_debuff_preset(name)
     end
     save_settings();
     return true;
+end
+
+--------------------------------------------------------------------------------------------------
+-- Automatic encounter timer learning
+--------------------------------------------------------------------------------------------------
+
+local function mark_learning_dirty(immediate)
+    warn.timerLearning.dirty = true;
+    local delay = immediate and 0 or 5;
+    local deadline = os.clock() + delay;
+    if (warn.timerLearning.next_save == nil or warn.timerLearning.next_save == 0 or
+        deadline < warn.timerLearning.next_save) then
+        warn.timerLearning.next_save = deadline;
+    end
+end
+
+local function clean_action_name(value)
+    local text = clean_log_subject(value);
+    text = text:gsub('[%.%!%?]+$', '');
+    return trim(text);
+end
+
+local function is_hostile_learning_actor(actor)
+    if (actor == nil or actor == '') then return false; end
+    local lower = actor:lower();
+    if (get_friendly_name_lookup()[lower]) then return false; end
+
+    -- Learning is deliberately limited to entities currently known to be hostile.  This
+    -- prevents party members, trusts, pets, and unrelated chat lines from polluting data.
+    return warn.debuffs.mob_names[lower] ~= nil;
+end
+
+local function get_learning_counts()
+    local counts = { observing = 0, suggested = 0, approved = 0, ignored = 0 };
+    for _, entry in pairs(warn.timerLearning.entries or {}) do
+        local status = tostring(entry.status or 'observing');
+        if (counts[status] ~= nil) then counts[status] = counts[status] + 1; end
+    end
+    return counts;
+end
+
+local function get_sorted_learning_entries(statusFilter)
+    local result = {};
+    for key, entry in pairs(warn.timerLearning.entries or {}) do
+        local status = tostring(entry.status or 'observing');
+        if (statusFilter == nil or statusFilter[status]) then
+            table.insert(result, { key = key, entry = entry });
+        end
+    end
+    table.sort(result, function (a, b)
+        if ((a.entry.updated_at or 0) ~= (b.entry.updated_at or 0)) then
+            return (a.entry.updated_at or 0) > (b.entry.updated_at or 0);
+        end
+        local left = tostring(a.entry.actor or '') .. '|' .. tostring(a.entry.ability or '');
+        local right = tostring(b.entry.actor or '') .. '|' .. tostring(b.entry.ability or '');
+        return left:lower() < right:lower();
+    end);
+    return result;
+end
+
+local function set_learning_status(key, entry, status)
+    if (entry == nil) then return; end
+    entry.status = status;
+    entry.updated_at = os.time();
+    if (status == 'approved') then
+        entry.approved_interval = tonumber(entry.interval);
+        entry.approved_at = os.time();
+    elseif (status ~= 'approved') then
+        if (entry.interval == nil and entry.approved_interval ~= nil) then
+            entry.interval = tonumber(entry.approved_interval);
+        end
+        entry.approved_interval = nil;
+        warn.timerLearning.active_timers[key or ''] = nil;
+    end
+    mark_learning_dirty(true);
+end
+
+local function forget_learning_entry(key)
+    if (key == nil) then return; end
+    warn.timerLearning.entries[key] = nil;
+    warn.timerLearning.active_timers[key] = nil;
+    if (warn.timerLearning.selected_key == key) then warn.timerLearning.selected_key = nil; end
+    mark_learning_dirty(true);
+end
+
+local function record_timer_learning_event(actorText, abilityText, eventType)
+    ensure_learning_settings();
+    if (not warn.settings.learning.enabled or warn.timerLearning.engine == nil) then return; end
+
+    local actor = clean_action_name(actorText);
+    local ability = clean_action_name(abilityText);
+    if (actor == '' or ability == '' or not is_hostile_learning_actor(actor)) then return; end
+
+    local nowEpoch = os.time();
+    local entry, changed, becameSuggestion, reason = warn.timerLearning.engine.record(
+        warn.timerLearning.entries, actor, ability, eventType, nowEpoch, warn.settings.learning);
+
+    if (changed) then
+        local key = warn.timerLearning.engine.make_key(actor, ability);
+        if (entry.status == 'approved' and tonumber(entry.approved_interval) ~= nil) then
+            local interval = tonumber(entry.approved_interval);
+            warn.timerLearning.active_timers[key] = {
+                actor = entry.actor,
+                ability = entry.ability,
+                interval = interval,
+                started_at = os.clock(),
+                next_at = os.clock() + interval,
+            };
+        end
+        mark_learning_dirty(becameSuggestion);
+    end
+
+    if (becameSuggestion) then
+        print(chat.header(addon.name):append(chat.message(string.format(
+            'Learned timer candidate: %s - %s repeats about %s (%d uses, %.0f%% confidence). Review it in the Learning tab.',
+            tostring(entry.actor), tostring(entry.ability), format_seconds(entry.interval or 0),
+            tonumber(entry.uses) or 0, (tonumber(entry.confidence) or 0) * 100))));
+    elseif (warn.debug and reason ~= 'duplicate_resolution' and reason ~= 'too_close') then
+        print(chat.header(addon.name):append(chat.message(string.format(
+            'Timer learning: %s - %s (%s, use %d)', actor, ability, tostring(reason), tonumber(entry.uses) or 0))));
+    end
+end
+
+local function save_pending_learning_data()
+    if (warn.timerLearning.dirty and os.clock() >= (warn.timerLearning.next_save or 0)) then
+        save_learning_data();
+        warn.timerLearning.next_save = 0;
+    end
 end
 
 -- Compatibility wrappers preserve the v1.5.x commands while the implementation is now unified.
@@ -2302,7 +2517,7 @@ function get_sound_files()
                 end
 
                 if (kernel32.FindNextFileA(handle, data) == 0) then
-                    break;
+                    break
                 end
             end
             kernel32.FindClose(handle);
@@ -3066,6 +3281,135 @@ function render_debuffs_tab()
 end
 
 --------------------------------------------------------------------------------------------------
+-- GUI: Timer Learning tab
+--------------------------------------------------------------------------------------------------
+
+function render_timer_learning_tab()
+    ensure_learning_settings();
+    local cfg = warn.settings.learning;
+    local counts = get_learning_counts();
+
+    imgui.BeginChild('warn_learning_scroll', { 0, 0 }, 0);
+
+    if (imgui.Checkbox('Learn Encounter Timings Automatically', { cfg.enabled })) then
+        cfg.enabled = not cfg.enabled;
+        save_settings();
+    end
+    imgui.TextColored({ 0.70, 0.78, 0.88, 1.0 },
+        'Warn observes repeated hostile actions locally. Learned data is never submitted automatically.');
+    imgui.TextColored({ 0.70, 0.78, 0.88, 1.0 },
+        'Candidates do not become timers until you approve them.');
+
+    local minimumUses = { tonumber(cfg.minimum_uses) or 3 };
+    if (imgui.SliderFloat('Uses Before Suggesting##warn_learning_uses', minimumUses, 3.0, 6.0, '%.0f')) then
+        cfg.minimum_uses = math.floor(minimumUses[1] + 0.5);
+        save_settings();
+    end
+
+    imgui.Separator();
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, string.format(
+        'Review Queue: %d   Approved Personal Timers: %d   Still Observing: %d',
+        counts.suggested, counts.approved, counts.observing));
+
+    imgui.Separator();
+    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Timer Suggestions');
+    imgui.BeginChild('warn_learning_suggestions', { 0, 205 }, ImGuiChildFlags_Borders);
+    local suggestions = get_sorted_learning_entries({ suggested = true });
+    if (#suggestions == 0) then
+        imgui.TextColored({ 0.62, 0.62, 0.62, 1.0 },
+            'No timer suggestions yet. Play normally; consistent repeats will appear here.');
+    else
+        for index, row in ipairs(suggestions) do
+            local key = row.key;
+            local entry = row.entry;
+            if (index > 1) then imgui.Separator(); end
+            imgui.TextColored({ 1.0, 0.90, 0.45, 1.0 },
+                tostring(entry.actor) .. ' - ' .. tostring(entry.ability));
+            imgui.TextColored({ 0.75, 0.82, 0.90, 1.0 }, string.format(
+                'About %s   |   %d uses   |   %.0f%% confidence   |   observed %s to %s',
+                format_seconds(entry.interval or 0), tonumber(entry.uses) or 0,
+                (tonumber(entry.confidence) or 0) * 100,
+                format_seconds(entry.minimum or entry.interval or 0),
+                format_seconds(entry.maximum or entry.interval or 0)));
+            if (imgui.Button('Approve Personal Timer##warn_learning_approve_' .. key)) then
+                set_learning_status(key, entry, 'approved');
+            end
+            imgui.SameLine();
+            if (imgui.Button('Keep Observing##warn_learning_observe_' .. key)) then
+                entry.status = 'observing';
+                entry.suggested_at = nil;
+                mark_learning_dirty(true);
+            end
+            imgui.SameLine();
+            if (imgui.Button('Ignore##warn_learning_ignore_' .. key)) then
+                set_learning_status(key, entry, 'ignored');
+            end
+        end
+    end
+    imgui.EndChild();
+
+    imgui.Separator();
+    imgui.TextColored({ 0.55, 1.0, 0.60, 1.0 }, 'Approved Personal Timers');
+    imgui.BeginChild('warn_learning_approved', { 0, 190 }, ImGuiChildFlags_Borders);
+    local approved = get_sorted_learning_entries({ approved = true });
+    if (#approved == 0) then
+        imgui.TextColored({ 0.62, 0.62, 0.62, 1.0 }, 'No personal timers approved.');
+    else
+        local now = os.clock();
+        for index, row in ipairs(approved) do
+            local key = row.key;
+            local entry = row.entry;
+            if (index > 1) then imgui.Separator(); end
+            local active = warn.timerLearning.active_timers[key];
+            local timingText = 'Waiting for next observed use';
+            if (active ~= nil) then
+                local remaining = (active.next_at or now) - now;
+                if (remaining >= 0) then
+                    timingText = 'Estimated next use: ~' .. format_seconds(remaining);
+                else
+                    timingText = 'Estimate overdue: ? +' .. format_seconds(-remaining);
+                end
+            end
+            imgui.TextColored({ 0.65, 1.0, 0.70, 1.0 },
+                tostring(entry.actor) .. ' - ' .. tostring(entry.ability));
+            imgui.Text(string.format('Approved interval: ~%s   |   %s',
+                format_seconds(entry.approved_interval or entry.interval or 0), timingText));
+            if (imgui.Button('Return to Review##warn_learning_review_' .. key)) then
+                set_learning_status(key, entry, 'suggested');
+            end
+            imgui.SameLine();
+            if (imgui.Button('Forget##warn_learning_forget_' .. key)) then
+                forget_learning_entry(key);
+            end
+        end
+    end
+    imgui.EndChild();
+
+    imgui.Separator();
+    imgui.Checkbox('Show Ignored Observations', warn.timerLearning.show_ignored);
+    if (warn.timerLearning.show_ignored[1]) then
+        local ignored = get_sorted_learning_entries({ ignored = true });
+        imgui.BeginChild('warn_learning_ignored', { 0, 110 }, ImGuiChildFlags_Borders);
+        if (#ignored == 0) then
+            imgui.TextColored({ 0.62, 0.62, 0.62, 1.0 }, 'No ignored observations.');
+        else
+            for _, row in ipairs(ignored) do
+                local key = row.key;
+                local entry = row.entry;
+                imgui.Text(tostring(entry.actor) .. ' - ' .. tostring(entry.ability));
+                imgui.SameLine();
+                if (imgui.Button('Restore##warn_learning_restore_' .. key)) then
+                    set_learning_status(key, entry, 'observing');
+                end
+            end
+        end
+        imgui.EndChild();
+    end
+
+    imgui.EndChild();
+end
+
+--------------------------------------------------------------------------------------------------
 -- GUI: Sound tab
 --------------------------------------------------------------------------------------------------
 
@@ -3152,6 +3496,14 @@ function render_config_window()
                 imgui.EndTabItem();
             end
 
+            local learningCounts = get_learning_counts();
+            local learningLabel = (learningCounts.suggested > 0)
+                and ('Learning (' .. tostring(learningCounts.suggested) .. ')') or 'Learning';
+            if (imgui.BeginTabItem(learningLabel, nil)) then
+                render_timer_learning_tab();
+                imgui.EndTabItem();
+            end
+
             if (imgui.BeginTabItem('Sound', nil)) then
                 render_sound_tab();
                 imgui.EndTabItem();
@@ -3171,7 +3523,9 @@ ashita.events.register('load', 'load_cb', function ()
     warn.settings = settings.load(default_settings, 'warn_settings');
     warn.abilitySettings = settings.load(default_ability_settings, 'warn_abilities');
     warn.ruleSettings = settings.load(default_rule_settings, 'warn_rule_settings');
+    warn.learningData = settings.load(default_learning_data, 'warn_learning');
     ensure_context_settings();
+    ensure_learning_settings();
     ensure_debuff_settings();
     ensure_rule_settings();
 
@@ -3222,10 +3576,12 @@ ashita.events.register('load', 'load_cb', function ()
     load_abilities();
     load_context_rules();
     load_debuff_definitions();
+    load_timer_learning();
     refresh_sound_files(false);
 end);
 
 ashita.events.register('unload', 'unload_cb', function ()
+    if (warn.timerLearning.dirty) then save_learning_data(); end
     if (warn.font ~= nil) then
         warn.font:destroy();
         warn.font = nil;
@@ -3526,11 +3882,17 @@ ashita.events.register('command', 'command_cb', function (e)
         local wanted = table.concat(args, ' ', 3):lower();
         local found = nil;
         for _, rule in ipairs(warn.rules.ability_rules or {}) do
-            if (tostring(rule.id):lower() == wanted) then found = rule; break; end
+            if (tostring(rule.id):lower() == wanted) then
+                found = rule;
+                break
+            end
         end
         if (found == nil) then
             for _, rule in ipairs(warn.rules.state_rules or {}) do
-                if (tostring(rule.id):lower() == wanted) then found = rule; break; end
+                if (tostring(rule.id):lower() == wanted) then
+                    found = rule;
+                    break
+                end
             end
         end
         if (found == nil) then
@@ -3657,6 +4019,9 @@ ashita.events.register('text_in', 'text_in_cb', function (e)
         return;
     end
 
+    local actorName = clean_action_name(string.sub(e.message, 1, math.max(0, verbStart - 1)));
+    record_timer_learning_event(actorName, abilityName, eventType);
+
     -- Contextual rules have priority over the manual warning list.
     local rule = find_context_ability_rule(eventType, abilityName, e.message);
     if (rule ~= nil and trigger_context_rule(rule, abilityName)) then
@@ -3692,6 +4057,7 @@ ashita.events.register('packet_in', 'packet_in_cb', function (e)
         warn.debuffs.mob_names = {};
         warn.debuffs.mob_counts = {};
         warn.debuffs.next_scan = 0;
+        warn.timerLearning.active_timers = {};
     end
 end);
 
@@ -3715,6 +4081,7 @@ ashita.events.register('d3d_present', 'present_cb', function ()
     process_debuff_estimates();
     process_deferred_debuff_losses();
     flush_debuff_loss_batch();
+    save_pending_learning_data();
     render_config_window();
     render_overlay();
     render_critical_debuff_alert();

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.8.0
+- Added automatic local encounter-timer learning for repeated hostile actor + ability pairs.
+- Added duplicate suppression so a `readies`/`uses` or `starts casting`/`casts` pair counts as one observation.
+- Added confidence scoring based on repeat consistency and sample count; the default review threshold is three uses.
+- Added a GUI-first **Learning** review queue with Approve, Keep Observing, Ignore, Restore and Forget actions.
+- Learned candidates remain inactive until explicitly approved; Warn never turns unreviewed observations into live timers.
+- Added approved personal-timer countdowns that start on the next observed use and become uncertain when overdue.
+- Stored learned evidence separately from curated encounter rules and normal settings so database updates cannot overwrite it.
+- Kept all learning data local; no observations are submitted automatically.
+
 ## 1.7.0
 - Added estimated timers to the Global Debuff Engine.
 - Tracked debuffs now show remaining time in the Debuffs tab and `/warn debuffs` output.

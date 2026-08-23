@@ -25,6 +25,7 @@ warn/
   data/
     abilities.txt
     debuffs.lua
+    timer_learning.lua
     rules.lua
     rules/
       catalog.lua
@@ -44,11 +45,12 @@ Load or reload with:
 /addon reload warn
 ```
 
-The GUI is organized around five simple concepts:
+The GUI is organized around six simple concepts:
 
 - **Abilities** — manual ability watch list
 - **Encounters** — automatic boss/encounter mechanics
 - **Debuffs** — global crowd-control and enfeeble state
+- **Learning** — locally observed repeat timers and their review queue
 - **Appearance** — warning overlay presentation
 - **Sound** — global/custom WAV behavior
 
@@ -235,6 +237,31 @@ Test with:
 /warn debuffs soon sleep Test Monster
 /warn debuffs lose sleep Test Monster
 ```
+
+## v1.8 automatic timer learning
+
+Warn can now learn repeated encounter timing while you play. It observes hostile
+`actor + ability` pairs, suppresses duplicate ready/use lines, and compares the recent
+intervals. After three consistent uses, a candidate appears in `/warn` → **Learning**.
+
+Learning follows a review-first safety model:
+
+```text
+Observe repeated action
+        ↓
+Confidence-scored suggestion
+        ↓
+Approve / Keep Observing / Ignore
+        ↓
+Approved personal timer only
+```
+
+Unreviewed observations never become live timers. Approved personal timers begin counting
+on the next observed use; if the estimate passes without another observed use, the display
+becomes uncertain instead of pretending the prediction is authoritative.
+
+Learned evidence is stored locally in `warn_learning` settings, separately from the curated
+rule database. Warn does not upload or submit observations automatically.
 
 ## Maintained debuff alerts
 
