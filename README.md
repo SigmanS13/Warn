@@ -184,6 +184,17 @@ be placed in `Ashita/config/addons/warn/themes/<name>/`; theme files cannot exec
 Drop any standard `.wav` file into `warn\sounds\` and click **Refresh Sounds** (or run
 `/warn sounds`). **Options → Sound** controls the global/manual warning sound.
 
+The same panel also controls the optional **First GUI Open** cue. It defaults to
+`firstopen.wav` and plays only when Warn's GUI is opened for the first time in the current FFXI
+process. Closing and reopening the window—or unloading and reloading Warn—does not replay it. A
+separate **Test First-Open Sound** button lets you audition the selected file without changing that
+per-launch state.
+
+Verified mechanics that call for immediate player healing use `healme.wav` by default. This does
+not include enemy self-heals, Zombie/stop-healing mechanics, or encounter instructions where
+`/heal` means kneeling. As with every contextual alert, an individual rule's sound can still be
+overridden from **Encounters**.
+
 ## Per-encounter / per-alert sounds
 
 Open `/warn` → **Encounters**. The Encounter Alerts list is searchable. Select any contextual

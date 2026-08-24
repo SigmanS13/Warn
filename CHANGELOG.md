@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.0.2
+- Added an optional first-GUI-open cue under **Options → Sound**, defaulting to `firstopen.wav`. The selected cue is consumed once per FFXI process, so closing/reopening Warn or reloading the addon cannot replay it during the same game launch.
+- Added an independent first-open sound selector and manual test button. Missing custom filenames remain visible in the selector instead of being silently replaced.
+- Bundled `firstopen.wav` and `healme.wav`, and added all newly supplied WAV files to the compatibility fallback scan.
+- Routed 22 verified player-healing mechanics to `healme.wav`, including HP-to-1/10%, major HP cuts, critical drains, and explicit healer/recovery calls.
+- Preserved semantic exclusions: enemy self-heals, Zombie/stop-healing mechanics, and commands where “heal” means entering the `/heal` stance retain their original alert sounds.
+- Added regression coverage for the session sound gate and the healing-rule classification.
+- All **59 Lua files parse cleanly** and all **21 test suites pass**.
+
 ## 3.0.1
 - Added centralized notification burst protection for AoE-heavy events. Rapid repeats of the same rule share one card and one sound, while distinct events enter a small priority-aware queue instead of repeatedly overwriting the live alert.
 - Capped the pending notification queue at four by default, capped recent deduplication history, and expire queued alerts after six seconds so bursts cannot create unbounded memory growth or a long procession of stale instructions.

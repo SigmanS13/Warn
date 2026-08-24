@@ -34,8 +34,8 @@ return {
         { id='ambu_meeble_water_warble', content='Ambuscade', encounter='Meeble - Volume 1', actor='Bozzetto Breadwinner', event='readies', ability='Water Meeble Warble', aliases={'Vertical Slash'}, message='WATER WARBLE!', severity='danger', sound='warning.wav', verified=true, source='https://www.bg-wiki.com/ffxi/Ambuscade_Archive', counter={type='spell',name='Barwatera',label='CAST BARWATERA!'} },
 
         -- Qutrub -----------------------------------------------------------------------------
-        { id='ambu_qutrub_reinforce', content='Ambuscade', encounter='Qutrub - Volume 1', actor='Bozzetto Bigwig', event='readies', ability='Reinforce', message='HP DRAIN!\nDO NOT BE AT CRITICAL HP', severity='critical', sound='alarm.wav', verified=true, source='https://www.bg-wiki.com/ffxi/Ambuscade_Archive' },
-        { id='ambu_qutrub_enforce', content='Ambuscade', encounter='Qutrub - Volume 1', actor='Bozzetto Bigwig', event='readies', ability='Enforce', message='HP DRAIN!\nDO NOT BE AT CRITICAL HP', severity='critical', sound='alarm.wav', verified=true, source='https://www.bg-wiki.com/ffxi/Ambuscade_Archive' },
+        { id='ambu_qutrub_reinforce', content='Ambuscade', encounter='Qutrub - Volume 1', actor='Bozzetto Bigwig', event='readies', ability='Reinforce', message='HP DRAIN!\nDO NOT BE AT CRITICAL HP', severity='critical', sound='healme.wav', verified=true, source='https://www.bg-wiki.com/ffxi/Ambuscade_Archive' },
+        { id='ambu_qutrub_enforce', content='Ambuscade', encounter='Qutrub - Volume 1', actor='Bozzetto Bigwig', event='readies', ability='Enforce', message='HP DRAIN!\nDO NOT BE AT CRITICAL HP', severity='critical', sound='healme.wav', verified=true, source='https://www.bg-wiki.com/ffxi/Ambuscade_Archive' },
         { id='ambu_qutrub_triple_reversal', content='Ambuscade', encounter='Qutrub - Volume 1', actor='Bozzetto Bigwig', event='readies', ability='Triple Reversal', message='TRIPLE REVERSAL!\nDANGER: MULTIPLE FOES ON ONE TARGET', severity='critical', sound='alarm.wav', verified=true, source='https://www.bg-wiki.com/ffxi/Ambuscade_Archive' },
 
         -- Qiqirn -----------------------------------------------------------------------------
@@ -77,7 +77,7 @@ return {
 
         -- Troll ------------------------------------------------------------------------------
         { id='ambu_troll_overthrow', content='Ambuscade', encounter='Troll - Volume 1', actor='Bozzetto Bruiser', event='readies', ability='Overthrow', message='SIDESTEP!\nMOVE TO THE SIDE OF BRUISER', severity='critical', sound='alarm.wav', verified=true, source='https://www.bg-wiki.com/ffxi/Bozzetto_Bruiser' },
-        { id='ambu_troll_head_seize', content='Ambuscade', encounter='Troll - Volume 1', actor='Bozzetto Bruiser', event='readies', ability='Head Seize', message='HP TO 1 + HATE RESET!\nHEAL IMMEDIATELY', severity='critical', sound='alarm.wav', verified=true, source='https://www.bg-wiki.com/ffxi/Ambuscade_Archive' },
+        { id='ambu_troll_head_seize', content='Ambuscade', encounter='Troll - Volume 1', actor='Bozzetto Bruiser', event='readies', ability='Head Seize', message='HP TO 1 + HATE RESET!\nHEAL IMMEDIATELY', severity='critical', sound='healme.wav', verified=true, source='https://www.bg-wiki.com/ffxi/Ambuscade_Archive' },
         { id='ambu_troll_zahhak_petro', content='Ambuscade', encounter='Troll - Volume 1', actor='Zahhak', event='readies', ability='Petro Eyes', message='TURN AROUND!\nGAZE PETRIFY', severity='critical', sound='alarm.wav', verified=true, source='https://www.bg-wiki.com/ffxi/Ambuscade_Archive' },
 
         -- Poroggo ----------------------------------------------------------------------------

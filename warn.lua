@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '3.0.1';
+addon.version   = '3.0.2';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -49,6 +49,7 @@ local encounterBrowser = require('ui.encounter_browser');
 local encounterRuntime = require('data.encounter_runtime');
 local activeEncounter = require('data.active_encounter');
 local alertGuard = require('data.alert_guard');
+local sessionSound = require('data.session_sound');
 
 local spellElementNames = {
     [0]='fire', [1]='ice', [2]='wind', [3]='earth', [4]='thunder', [5]='water', [6]='light', [7]='dark',
@@ -111,8 +112,13 @@ local default_settings = T{
         encounter_hud_opacity = 0.86,
     },
     sound = T{
-        enabled  = true,
-        selected = 'msg.wav',
+        enabled             = true,
+        selected            = 'msg.wav',
+        first_open_enabled  = true,
+        first_open_selected = 'firstopen.wav',
+        -- Persisted process marker: prevents an addon reload from replaying the
+        -- cue while the same FFXI process is still running.
+        first_open_session  = '',
     },
     context = T{
         enabled           = true,
@@ -672,6 +678,18 @@ local function ensure_ui_settings()
     if (overlay.repeat_suppression == nil) then overlay.repeat_suppression = 1.25; end
     if (overlay.alert_queue_limit == nil) then overlay.alert_queue_limit = 4; end
     if (overlay.alert_queue_max_age == nil) then overlay.alert_queue_max_age = 6.0; end
+end
+
+local function ensure_sound_settings()
+    if (warn.settings.sound == nil) then warn.settings.sound = T{}; end
+    local cfg = warn.settings.sound;
+    if (cfg.enabled == nil) then cfg.enabled = true; end
+    if (cfg.selected == nil or cfg.selected == '') then cfg.selected = 'msg.wav'; end
+    if (cfg.first_open_enabled == nil) then cfg.first_open_enabled = true; end
+    if (cfg.first_open_selected == nil or cfg.first_open_selected == '') then
+        cfg.first_open_selected = 'firstopen.wav';
+    end
+    if (cfg.first_open_session == nil) then cfg.first_open_session = ''; end
 end
 
 local function get_ui_scale()
@@ -3728,6 +3746,11 @@ ffi.cdef[[
     void* __stdcall FindFirstFileA(const char* lpFileName, void* lpFindFileData);
     int __stdcall FindNextFileA(void* hFindFile, void* lpFindFileData);
     int __stdcall FindClose(void* hFindFile);
+    typedef struct { unsigned long low; unsigned long high; } WARN_FILETIME;
+    void* __stdcall GetCurrentProcess(void);
+    unsigned long __stdcall GetCurrentProcessId(void);
+    int __stdcall GetProcessTimes(void* process, WARN_FILETIME* created,
+        WARN_FILETIME* exited, WARN_FILETIME* kernel, WARN_FILETIME* user);
 ]]
 
 local winmm = nil;
@@ -3794,7 +3817,9 @@ function get_sound_files()
     -- If directory enumeration is unavailable for any reason, preserve the bundled
     -- files as a safe fallback when they actually exist.
     if (#files == 0) then
-        local fallback = { 'msg.wav', 'beep.wav', 'alert.wav', 'warning.wav', 'alarm.wav', 'Fly you fools!.wav', 'Kefka.wav', 'Run away.wav' };
+        local fallback = { 'msg.wav', 'beep.wav', 'alert.wav', 'warning.wav', 'alarm.wav',
+            'firstopen.wav', 'healme.wav', 'celebrate.wav', 'leave.wav', 'rrun.wav',
+            'Fly you fools!.wav', 'Kefka.wav', 'Run away.wav' };
         for _, name in ipairs(fallback) do
             local f = io.open(addon.path .. '\\sounds\\' .. name, 'rb');
             if (f ~= nil) then
@@ -3888,6 +3913,47 @@ end
 
 function play_selected_sound()
     play_sound_file(warn.settings.sound.selected);
+end
+
+local function get_game_session_marker()
+    if (kernel32 == nil) then return 'warn-runtime'; end
+
+    local ok, marker = pcall(function ()
+        local processId = tonumber(kernel32.GetCurrentProcessId()) or 0;
+        local created = ffi.new('WARN_FILETIME[1]');
+        local exited = ffi.new('WARN_FILETIME[1]');
+        local kernelTime = ffi.new('WARN_FILETIME[1]');
+        local userTime = ffi.new('WARN_FILETIME[1]');
+        local result = kernel32.GetProcessTimes(kernel32.GetCurrentProcess(), created, exited, kernelTime, userTime);
+        if (result ~= 0) then
+            return string.format('%u:%u:%u', processId,
+                tonumber(created[0].high) or 0, tonumber(created[0].low) or 0);
+        end
+        return string.format('%u', processId);
+    end);
+    if (ok and marker ~= nil and marker ~= '') then return marker; end
+    return 'warn-runtime';
+end
+
+local function play_first_gui_open_sound_once()
+    ensure_sound_settings();
+    local cfg = warn.settings.sound;
+    local marker = get_game_session_marker();
+    local shouldPlay, filename, consumed = sessionSound.consume(cfg, marker);
+    -- Save before attempting playback so a missing or invalid file cannot cause
+    -- repeated sound attempts every time the window is reopened.
+    if (consumed) then save_settings(); end
+    if (shouldPlay) then play_sound_file(filename); end
+end
+
+local function set_gui_open(open)
+    local shouldOpen = (open == true);
+    local isOpening = shouldOpen and warn.isGuiOpen[1] ~= true;
+    warn.isGuiOpen[1] = shouldOpen;
+    if (isOpening) then
+        refresh_sound_files(false);
+        play_first_gui_open_sound_once();
+    end
 end
 
 --------------------------------------------------------------------------------------------------
@@ -5747,17 +5813,12 @@ end
 -- GUI: Sound tab
 --------------------------------------------------------------------------------------------------
 
-function render_sound_tab()
-    if (imgui.Checkbox('Enable Warning Sound', { warn.settings.sound.enabled })) then
-        warn.settings.sound.enabled = not warn.settings.sound.enabled;
-        save_settings();
-    end
-
-    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Sound:');
-
-    local soundIndex = 0;
-    local selectedName = warn.settings.sound.selected or 'None';
-    local comboParts = {};
+local function build_sound_combo(selectedName)
+    selectedName = tostring(selectedName or 'None');
+    local values = {};
+    local labels = {};
+    local selectedIndex = 0;
+    local found = false;
 
     for i = 1, #warn.soundFiles do
         local filename = warn.soundFiles[i];
@@ -5765,17 +5826,37 @@ function render_sound_tab()
         if (filename ~= 'None') then
             displayName = filename:gsub('%.wav$', ''):gsub('%.WAV$', '');
         end
-        table.insert(comboParts, displayName);
-
+        table.insert(values, filename);
+        table.insert(labels, displayName);
         if (filename:lower() == selectedName:lower()) then
-            soundIndex = i - 1;
+            selectedIndex = i - 1;
+            found = true;
         end
     end
 
-    local soundNames = table.concat(comboParts, '\0') .. '\0\0';
+    -- Keep configured custom filenames visible even when the WAV has not yet
+    -- been copied into the sounds folder.
+    if (not found and selectedName ~= '' and selectedName ~= 'None') then
+        table.insert(values, selectedName);
+        table.insert(labels, '[Missing] ' .. selectedName:gsub('%.wav$', ''):gsub('%.WAV$', ''));
+        selectedIndex = #values - 1;
+    end
+    return values, table.concat(labels, '\0') .. '\0\0', selectedIndex;
+end
+
+function render_sound_tab()
+    ensure_sound_settings();
+    if (imgui.Checkbox('Enable Warning Sound', { warn.settings.sound.enabled })) then
+        warn.settings.sound.enabled = not warn.settings.sound.enabled;
+        save_settings();
+    end
+
+    imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Sound:');
+
+    local values, soundNames, soundIndex = build_sound_combo(warn.settings.sound.selected);
     local selected = { soundIndex };
     if (imgui.Combo('##warn_sound_combo', selected, soundNames)) then
-        warn.settings.sound.selected = warn.soundFiles[selected[1] + 1] or 'None';
+        warn.settings.sound.selected = values[selected[1] + 1] or 'None';
         save_settings();
     end
 
@@ -5785,6 +5866,25 @@ function render_sound_tab()
     imgui.SameLine();
     if (imgui.Button('Refresh Sounds')) then
         refresh_sound_files(true);
+    end
+
+    imgui.Separator();
+    imgui.TextColored({ 1.0, 0.84, 0.35, 1.0 }, 'First GUI Open');
+    if (imgui.Checkbox('Play Sound on First GUI Open', { warn.settings.sound.first_open_enabled })) then
+        warn.settings.sound.first_open_enabled = not warn.settings.sound.first_open_enabled;
+        save_settings();
+    end
+    imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 },
+        'Plays once per FFXI launch. Reloading Warn will not play it again.');
+
+    local firstValues, firstNames, firstIndex = build_sound_combo(warn.settings.sound.first_open_selected);
+    local firstSelected = { firstIndex };
+    if (imgui.Combo('##warn_first_open_sound_combo', firstSelected, firstNames)) then
+        warn.settings.sound.first_open_selected = firstValues[firstSelected[1] + 1] or 'None';
+        save_settings();
+    end
+    if (imgui.Button('Test First-Open Sound')) then
+        play_sound_file(warn.settings.sound.first_open_selected);
     end
 
     imgui.Separator();
@@ -6126,8 +6226,7 @@ local function render_launcher()
             warn.ui.launcher_drag_mouse_y = mouse_y;
         elseif (warn.ui.launcher_press_active and imgui.IsMouseReleased(0)) then
             if (warn.ui.launcher_dragged ~= true) then
-                warn.isGuiOpen[1] = not warn.isGuiOpen[1];
-                if (warn.isGuiOpen[1]) then refresh_sound_files(false); end
+                set_gui_open(not warn.isGuiOpen[1]);
             end
             warn.ui.launcher_press_active = false;
             warn.ui.launcher_dragged = false;
@@ -6313,6 +6412,7 @@ ashita.events.register('load', 'load_cb', function ()
     warn.learningData = settings.load(default_learning_data, 'warn_learning');
     ensure_context_settings();
     ensure_ui_settings();
+    ensure_sound_settings();
     ensure_responsibility_settings();
     ensure_learning_settings();
     ensure_community_settings();
@@ -6435,10 +6535,7 @@ ashita.events.register('command', 'command_cb', function (e)
 
     -- /warn - toggle the GUI.
     if (#args == 1) then
-        warn.isGuiOpen[1] = not warn.isGuiOpen[1];
-        if (warn.isGuiOpen[1]) then
-            refresh_sound_files(false);
-        end
+        set_gui_open(not warn.isGuiOpen[1]);
         return;
     end
 
@@ -6702,8 +6799,7 @@ ashita.events.register('command', 'command_cb', function (e)
         end
         warn.selectedRuleId = rule.id;
         warn.ruleSearch[1] = '';
-        warn.isGuiOpen[1] = true;
-        refresh_sound_files(false);
+        set_gui_open(true);
         return;
     end
 
