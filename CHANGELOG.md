@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.0.9
+- Added a default-enabled **Keep Warn Dashboard Above Other Addons** option under Appearance. Warn requests foreground focus while its dashboard is open; the option can be disabled when another addon's controls need to appear over it.
+- Increased the fresh-install dashboard baseline from 1160×820 to 1320×1080 logical pixels, producing approximately the large layout shown at automatic 1440p scaling while remaining capped to the current display with a 40-pixel safety margin.
+- Changed starter sizing to `FirstUseEver`, preserving user-resized ImGui dimensions on later addon and game launches instead of reapplying the default every session.
+
 ## 3.0.8
 - Fixed Encounter Intelligence centering by measuring against each active ImGui child window's real screen position and width instead of the unreliable content-region wrapper and its 800-pixel fallback.
 - Allowed the Encounter Intelligence scroll pane to fill the dashboard content region and reduced only the non-scrolling outer dashboard reserve, moving its scrollbar substantially farther right while preserving the 42/56-pixel separation between nested browser scrollbars.

@@ -140,6 +140,10 @@ switching between 1080p, 1440p, or custom interface scaling. Dragging the previe
 returns the card to Custom placement. Critical cards use the same selected placement while keeping
 their screen-edge effect.
 
+The dashboard starts at a large 1320×1080 baseline on a fresh installation, capped to the current
+display, and preserves later manual resizing. **Keep Warn Dashboard Above Other Addons** is enabled
+by default; disable it under Appearance when another addon's controls need to appear over Warn.
+
 ## Notification burst protection
 
 Warn displays one notification card at a time. Rapid duplicates from an AoE event are coalesced

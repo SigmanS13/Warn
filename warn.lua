@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '3.0.8';
+addon.version   = '3.0.9';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -99,6 +99,7 @@ local default_settings = T{
         theme                = 'vana_tactical',
         scale_preset         = 'auto',  -- auto / 1440p / 1080p / custom
         custom_scale         = 1.0,
+        always_on_top        = true,
         launcher_enabled     = true,
         launcher_position_x  = -1,
         launcher_position_y  = -1,
@@ -653,6 +654,7 @@ local function ensure_ui_settings()
     if (cfg.theme == nil) then cfg.theme = 'vana_tactical'; end
     if (cfg.scale_preset == nil) then cfg.scale_preset = 'auto'; end
     if (cfg.custom_scale == nil) then cfg.custom_scale = 1.0; end
+    if (cfg.always_on_top == nil) then cfg.always_on_top = true; end
     if (cfg.launcher_enabled == nil) then cfg.launcher_enabled = true; end
     if (cfg.launcher_position_x == nil) then cfg.launcher_position_x = -1; end
     if (cfg.launcher_position_y == nil) then cfg.launcher_position_y = -1; end
@@ -4483,6 +4485,12 @@ function render_appearance_tab()
         end
     end
     imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 }, string.format('Resolved scale: %.2fx', get_ui_scale()));
+    if (imgui.Checkbox('Keep Warn Dashboard Above Other Addons', { ui.always_on_top })) then
+        ui.always_on_top = not ui.always_on_top;
+        save_settings();
+    end
+    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 },
+        'Enabled by default. Disable this when you need to interact with another addon over Warn.');
 
     local themes = uiTheme.list(addon.path);
     local theme_index = 0;
@@ -6195,10 +6203,16 @@ function render_config_window()
     if (warn.ui.theme == nil) then reload_ui_theme(); end
     local scale = get_ui_scale();
     if (not warn.guiSizeInitialized) then
-        imgui.SetNextWindowSize({ 1160 * scale, 820 * scale, });
+        local display = imgui.GetIO().DisplaySize;
+        local starterWidth = math.min(1320 * scale, math.max(720 * scale, tonumber(display.x) - 40));
+        local starterHeight = math.min(1080 * scale, math.max(600 * scale, tonumber(display.y) - 40));
+        imgui.SetNextWindowSize({ starterWidth, starterHeight }, ImGuiCond_FirstUseEver);
         warn.guiSizeInitialized = true;
     end
     imgui.SetNextWindowSizeConstraints({ 720 * scale, 600 * scale, }, { FLT_MAX, FLT_MAX, });
+    if (warn.settings.ui.always_on_top and type(imgui.SetNextWindowFocus) == 'function') then
+        imgui.SetNextWindowFocus();
+    end
     uiTheme.push(warn.ui.theme, scale);
     local flags = bit.bor(ImGuiWindowFlags_NoTitleBar, ImGuiWindowFlags_NoCollapse,
         ImGuiWindowFlags_NoScrollbar, ImGuiWindowFlags_NoScrollWithMouse);
