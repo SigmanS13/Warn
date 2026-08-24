@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.4.0
+- Added the first complete **Omen** content module: Glassy Craver, Glassy Gorger, Glassy Thinker, Fu, Kyou, Kei, Gin, Kin, and Ou.
+- Added 27 verified Omen alerts covering documented reactive mechanics and fixed HP-gated sequences, including Pain Sync, Dancing Fullers, Unfaltering Bravado, Target / Eleventh Dimension, and Prophylaxis.
+- Expanded **The Shadow Lord Battle** from two rules to six: Damning Edict, Swath of Silence, Giga Slash, Bowels of Agony, Implosion, and Firaja.
+- Moved Shadow Lord's immunity-switch alerts to the earlier packet-visible ready event and added packet-level coverage for Implosion, whose name is not printed in the normal battle log.
+- Added four verified **Puppet in Peril** alerts for Lancelord Gaheel Ja: Burning Memories, Blazing Angon, Granite Skin, and Batterhorn.
+- Kept Burning Memories' Stun instruction assignment-aware: the critical mechanic warning reaches everyone, while the action prompt appears only for an assigned, currently capable interrupter.
+- Added database-wide unique-ID and minimum-coverage checks. The bundled database now contains **211 ability/spell rules, 9 encounter-state rules, and 130 indexed encounter entries**.
+
+## 2.3.2
+- Finalized the approved Roles icon set as sharp native vector glyphs: shield for Tank, potion for Primary Healer, single bow and arrow for Damage Dealer, and harp for Support.
+- Simplified the Damage Dealer silhouette to one curved bow, taut string, and one arrow so it remains legible at the addon's normal 24-pixel icon size.
+- Unified all four glyphs with Warn's brass outlines, indigo structure, and restrained blue highlights while preserving existing saved role profiles.
+
 ## 2.3.1
 - Reworked the Roles glyphs from the supplied visual references as native Warn vector art rather than importing their source pixels.
 - Tank now uses a sculpted shield; Primary Healer uses a diagonal syringe; Damage Dealer uses a crossed sword and magical staff; Support uses overlapping dice.

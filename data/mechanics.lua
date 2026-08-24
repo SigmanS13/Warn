@@ -5,9 +5,9 @@ local mechanics = {};
 
 mechanics.responsibilities = {
     { id = 'tank',           label = 'Tank',           group = 'role', icon = 'shield', description = 'Show enmity, positioning and tank-recovery instructions.' },
-    { id = 'primary_healer', label = 'Primary Healer', group = 'role', icon = 'syringe', description = 'Show healing and recovery instructions.' },
-    { id = 'damage',         label = 'Damage Dealer',  group = 'role', icon = 'weapons', description = 'Show damage-window and damage-hold instructions.' },
-    { id = 'support',        label = 'Support',        group = 'role', icon = 'dice', description = 'Show dispel, resistance and party-support instructions.' },
+    { id = 'primary_healer', label = 'Primary Healer', group = 'role', icon = 'potion', description = 'Show healing and recovery instructions.' },
+    { id = 'damage',         label = 'Damage Dealer',  group = 'role', icon = 'bow', description = 'Show damage-window and damage-hold instructions.' },
+    { id = 'support',        label = 'Support',        group = 'role', icon = 'harp', description = 'Show dispel, resistance and party-support instructions.' },
     { id = 'cleanse',        label = 'Cleanse',        group = 'assignment', description = 'Show status-removal instructions.' },
     { id = 'interrupt',      label = 'Interrupt',      group = 'assignment', description = 'Show Stun and interruption instructions.' },
     { id = 'crowd_control',  label = 'Crowd Control',  group = 'assignment', description = 'Show sleep, bind and enfeeble-maintenance instructions.' },

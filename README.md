@@ -39,6 +39,7 @@ warn/
       ambuscade_v1.lua
       ambuscade_v2.lua
       high_tier_battlefields.lua
+      omen.lua
       COVERAGE.md
   sounds/
     *.wav
@@ -149,6 +150,11 @@ Current shipped rules are a verified starter set, not a claim of complete FFXI c
 Rules should preserve source/provenance metadata and should not guess whether a move is
 stunnable, silenceable, avoidable, etc.
 
+The v2.4 bundled database contains **211 ability/spell rules, 9 encounter-state rules, and
+130 indexed encounter entries**. Omen is represented by all three Glassy mid-bosses and all
+six Caturae bosses. HTMB includes direct rules for 28 of 30 indexed categories; **Head Wind**
+and **Legacy of the Lost** remain indexed research targets rather than receiving guessed alerts.
+
 ## Job-specific counters
 
 The current verified capability engine supports normal magic and Blue Magic. A spell suggestion is
@@ -178,6 +184,17 @@ evidence unless the player explicitly enables a Custom Watch.
 
 The Custom Watches catalog is populated from Ashita's local monster-ability resources. The
 packaged `data/abilities.txt` list is retained only as an offline compatibility fallback.
+
+## v2.4 encounter expansion
+
+Omen now has a dedicated data module covering Glassy Craver, Glassy Gorger, Glassy Thinker,
+Fu, Kyou, Kei, Gin, Kin, and Ou. Scripted HP-gate mechanics are labeled separately from
+ordinary reactive TP moves so the interface does not present uncertain behavior as a timer.
+
+The Shadow Lord profile now warns for both immunity switches plus Giga Slash, Bowels of Agony,
+Implosion, and Firaja. Because incoming action packets are independent of chat formatting,
+Implosion can be recognized even though its action name is not printed in the normal battle log.
+Puppet in Peril now covers Lancelord Gaheel Ja's most actionable documented mechanics.
 
 
 

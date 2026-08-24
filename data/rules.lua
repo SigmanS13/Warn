@@ -6,12 +6,13 @@ local modules = {
     'catalog.lua',
     'generic.lua',
     'high_tier_battlefields.lua',
+    'omen.lua',
     'ambuscade_v1.lua',
     'ambuscade_v2.lua',
 };
 
 local result = {
-    version = 7,
+    version = 8,
     ability_rules = {},
     state_rules = {},
     catalog = {},

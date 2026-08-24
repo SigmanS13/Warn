@@ -9,6 +9,7 @@ Warn's encounter knowledge is intentionally kept outside `warn.lua` so the datab
 - `ambuscade_v1.lua` — historical Volume 1 rules
 - `ambuscade_v2.lua` — historical Volume 2 rules
 - `high_tier_battlefields.lua` — HTMB rules
+- `omen.lua` — Omen Glassy mid-boss and Caturae boss rules
 - `COVERAGE.md` — progress tracker and research queue
 
 `../rules.lua` loads these modules and merges their `ability_rules`, `state_rules`, and catalog entries.

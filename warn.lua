@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '2.3.1';
+addon.version   = '2.4.0';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -4589,7 +4589,6 @@ local function draw_role_icon(icon, x, y, size)
     local color = imgui.GetColorU32((warn.ui.theme and warn.ui.theme.brass_hover) or { 1.0, 0.84, 0.50, 1.0 });
     local dim = imgui.GetColorU32((warn.ui.theme and warn.ui.theme.brass_dim) or { 0.55, 0.45, 0.25, 1.0 });
     local accent = imgui.GetColorU32((warn.ui.theme and warn.ui.theme.important) or { 0.30, 0.68, 1.0, 1.0 });
-    local panel = imgui.GetColorU32((warn.ui.theme and warn.ui.theme.panel_alt) or { 0.05, 0.095, 0.19, 1.0 });
     local thickness = math.max(1, get_ui_scale() * 1.5);
     local fine = math.max(1, get_ui_scale());
 
@@ -4606,57 +4605,62 @@ local function draw_role_icon(icon, x, y, size)
             { x + size * 0.50, y + size * 0.17 }, dim, fine);
         draw:AddLine({ x + size * 0.50, y + size * 0.17 },
             { x + size * 0.76, y + size * 0.24 }, color, fine);
-    elseif (icon == 'syringe') then
-        -- Diagonal syringe with a bright brass barrel and a small blue fluid chamber.
-        draw:AddLine({ x + size * 0.23, y + size * 0.78 },
-            { x + size * 0.72, y + size * 0.29 }, dim, thickness + 3 * get_ui_scale());
-        draw:AddLine({ x + size * 0.23, y + size * 0.78 },
-            { x + size * 0.72, y + size * 0.29 }, color, thickness + get_ui_scale());
-        draw:AddLine({ x + size * 0.42, y + size * 0.59 },
-            { x + size * 0.57, y + size * 0.44 }, accent, thickness + get_ui_scale());
-        draw:AddLine({ x + size * 0.66, y + size * 0.22 },
-            { x + size * 0.80, y + size * 0.36 }, color, thickness);
-        draw:AddLine({ x + size * 0.15, y + size * 0.70 },
-            { x + size * 0.31, y + size * 0.86 }, color, thickness);
-        draw:AddLine({ x + size * 0.76, y + size * 0.25 },
-            { x + size * 0.94, y + size * 0.07 }, dim, fine);
-        draw:AddCircleFilled({ x + size * 0.95, y + size * 0.06 }, math.max(1, size * 0.035), color, 10);
-    elseif (icon == 'weapons') then
-        -- Sword and staff cross as separate physical and magical damage silhouettes.
-        draw:AddLine({ x + size * 0.18, y + size * 0.84 },
-            { x + size * 0.76, y + size * 0.20 }, color, thickness + get_ui_scale());
+    elseif (icon == 'potion') then
+        -- A compact alchemist bottle: broad body, narrow neck, and a blue liquid line.
+        local bottle = {
+            { x + size * 0.39, y + size * 0.10 }, { x + size * 0.61, y + size * 0.10 },
+            { x + size * 0.61, y + size * 0.30 }, { x + size * 0.73, y + size * 0.42 },
+            { x + size * 0.80, y + size * 0.59 }, { x + size * 0.76, y + size * 0.75 },
+            { x + size * 0.65, y + size * 0.85 }, { x + size * 0.35, y + size * 0.85 },
+            { x + size * 0.24, y + size * 0.75 }, { x + size * 0.20, y + size * 0.59 },
+            { x + size * 0.27, y + size * 0.42 }, { x + size * 0.39, y + size * 0.30 },
+        };
+        draw_line_path(draw, bottle, color, thickness, true);
+        draw:AddLine({ x + size * 0.35, y + size * 0.10 },
+            { x + size * 0.65, y + size * 0.10 }, dim, thickness);
+        draw:AddLine({ x + size * 0.27, y + size * 0.62 },
+            { x + size * 0.73, y + size * 0.62 }, accent, thickness + fine);
+        draw:AddLine({ x + size * 0.31, y + size * 0.69 },
+            { x + size * 0.69, y + size * 0.69 }, dim, fine);
+    elseif (icon == 'bow') then
+        -- One bow and one arrow only; broad spacing keeps the silhouette readable at 24 px.
         draw_line_path(draw, {
-            { x + size * 0.76, y + size * 0.20 }, { x + size * 0.95, y + size * 0.05 },
-            { x + size * 0.86, y + size * 0.29 },
+            { x + size * 0.30, y + size * 0.10 }, { x + size * 0.17, y + size * 0.31 },
+            { x + size * 0.15, y + size * 0.57 }, { x + size * 0.28, y + size * 0.88 },
+        }, color, thickness + fine, false);
+        draw:AddLine({ x + size * 0.30, y + size * 0.10 },
+            { x + size * 0.31, y + size * 0.50 }, dim, fine);
+        draw:AddLine({ x + size * 0.31, y + size * 0.50 },
+            { x + size * 0.28, y + size * 0.88 }, dim, fine);
+        draw:AddLine({ x + size * 0.12, y + size * 0.82 },
+            { x + size * 0.86, y + size * 0.18 }, accent, thickness);
+        draw_line_path(draw, {
+            { x + size * 0.86, y + size * 0.18 }, { x + size * 0.72, y + size * 0.20 },
+            { x + size * 0.84, y + size * 0.32 },
         }, color, thickness, true);
-        draw:AddLine({ x + size * 0.12, y + size * 0.71 },
-            { x + size * 0.29, y + size * 0.88 }, color, thickness);
-        draw:AddLine({ x + size * 0.09, y + size * 0.08 },
-            { x + size * 0.86, y + size * 0.89 }, dim, thickness);
-        draw:AddCircleFilled({ x + size * 0.10, y + size * 0.09 }, size * 0.105, accent, 16);
-        draw:AddCircle({ x + size * 0.10, y + size * 0.09 }, size * 0.125, color, 16, fine);
-        draw:AddCircleFilled({ x + size * 0.86, y + size * 0.89 }, size * 0.06, color, 12);
-    elseif (icon == 'dice') then
-        -- The rear die carries a restrained support cross; the foreground die keeps clear pips.
-        draw:AddRectFilled({ x + size * 0.08, y + size * 0.08 },
-            { x + size * 0.62, y + size * 0.62 }, panel, 2 * get_ui_scale());
-        draw:AddRect({ x + size * 0.08, y + size * 0.08 },
-            { x + size * 0.62, y + size * 0.62 }, dim, 2 * get_ui_scale(), 0, thickness);
-        local cross_x = x + size * 0.33;
-        local cross_y = y + size * 0.31;
-        draw:AddLine({ cross_x - size * 0.09, cross_y }, { cross_x + size * 0.09, cross_y }, accent, thickness);
-        draw:AddLine({ cross_x, cross_y - size * 0.09 }, { cross_x, cross_y + size * 0.09 }, accent, thickness);
-
-        draw:AddRectFilled({ x + size * 0.38, y + size * 0.34 },
-            { x + size * 0.94, y + size * 0.91 }, panel, 2 * get_ui_scale());
-        draw:AddRect({ x + size * 0.38, y + size * 0.34 },
-            { x + size * 0.94, y + size * 0.91 }, color, 2 * get_ui_scale(), 0, thickness);
-        local pip = math.max(1, size * 0.045);
-        draw:AddCircleFilled({ x + size * 0.50, y + size * 0.46 }, pip, color, 10);
-        draw:AddCircleFilled({ x + size * 0.82, y + size * 0.46 }, pip, color, 10);
-        draw:AddCircleFilled({ x + size * 0.66, y + size * 0.63 }, pip, accent, 10);
-        draw:AddCircleFilled({ x + size * 0.50, y + size * 0.79 }, pip, color, 10);
-        draw:AddCircleFilled({ x + size * 0.82, y + size * 0.79 }, pip, color, 10);
+        draw:AddLine({ x + size * 0.11, y + size * 0.82 },
+            { x + size * 0.12, y + size * 0.68 }, color, fine);
+        draw:AddLine({ x + size * 0.11, y + size * 0.82 },
+            { x + size * 0.25, y + size * 0.81 }, color, fine);
+    elseif (icon == 'harp') then
+        -- Open lyre silhouette with four separated strings for instant recognition.
+        draw_line_path(draw, {
+            { x + size * 0.24, y + size * 0.16 }, { x + size * 0.70, y + size * 0.18 },
+            { x + size * 0.81, y + size * 0.31 }, { x + size * 0.72, y + size * 0.70 },
+            { x + size * 0.62, y + size * 0.84 }, { x + size * 0.24, y + size * 0.80 },
+        }, color, thickness, false);
+        draw:AddLine({ x + size * 0.24, y + size * 0.16 },
+            { x + size * 0.24, y + size * 0.80 }, color, thickness + fine);
+        draw:AddLine({ x + size * 0.20, y + size * 0.84 },
+            { x + size * 0.67, y + size * 0.88 }, dim, thickness);
+        draw:AddLine({ x + size * 0.35, y + size * 0.24 },
+            { x + size * 0.35, y + size * 0.76 }, accent, fine);
+        draw:AddLine({ x + size * 0.46, y + size * 0.23 },
+            { x + size * 0.46, y + size * 0.77 }, dim, fine);
+        draw:AddLine({ x + size * 0.57, y + size * 0.22 },
+            { x + size * 0.57, y + size * 0.78 }, accent, fine);
+        draw:AddLine({ x + size * 0.67, y + size * 0.21 },
+            { x + size * 0.64, y + size * 0.80 }, dim, fine);
     end
 end
 
