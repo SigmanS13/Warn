@@ -87,10 +87,12 @@ shoulder buttons switch **Encounters / Options**, the D-pad navigates the curren
 the layout-specific back button closes the dashboard. These controls are only consumed while
 the dashboard is open.
 
-Live messages use three visual levels: **Important**, **Danger**, and **Critical**. The warning
-card's background opacity is independently adjustable under **Options → Appearance**; lowering
-it does not dim the alert text or the critical screen-edge cue. Card size, edge intensity,
-duration, and Reduced Motion are configurable separately, with test buttons for every level.
+Live messages use ornate stepped indigo frames with twin brass rails, engraved diamonds, a
+Warn crest, and three visual levels: **Important**, **Danger**, and **Critical**. A slim inlaid
+rail shows how long the notification will remain visible. The warning card's background opacity
+is independently adjustable under **Options → Appearance**; lowering it does not dim the alert
+text, brass frame, or critical screen-edge cue. Card size, edge intensity, duration, and Reduced
+Motion are configurable separately, with test buttons for every level.
 The positioning preview appears only when explicitly requested and closes automatically when
 leaving Appearance; **Reset Warning Position** restores its normal placement.
 

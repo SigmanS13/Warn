@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.3.0
+- Rebuilt live warning cards around an ornate Vana'diel frame with a stepped silhouette, twin brass rails, engraved corner strokes, and center/side diamond details.
+- Added a compact Warn crest, stronger title hierarchy, and balanced severity/prediction labels to distinguish alerts from stock ImGui panels.
+- Added a restrained severity-colored lifetime rail so each notification communicates its remaining screen time without becoming a conventional generic progress card.
+- Preserved warning opacity, scale, position, Reduced Motion, critical edge illumination, and full-card preview dragging.
+- Kept the new decoration texture-free and draw-list based so warning rendering remains lightweight during combat.
+
 ## 2.2.0
 - Added automatic dual-layout parsing for incoming action packet `0x028`: retail / XiPackets and the legacy target-count header commonly used by SimpleLog and DSP-based servers.
 - Added an **Action Packet Layout** override under **Options → Alerts**, plus the detected layout in packet diagnostics.

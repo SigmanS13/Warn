@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '2.2.0';
+addon.version   = '2.3.0';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -3382,6 +3382,107 @@ local function split_first_line(value)
     return first or value, rest or '';
 end
 
+local function draw_line_path(draw, points, color, thickness, closed)
+    for index = 1, #points - 1 do
+        draw:AddLine(points[index], points[index + 1], color, thickness);
+    end
+    if (closed == true and #points > 2) then
+        draw:AddLine(points[#points], points[1], color, thickness);
+    end
+end
+
+local function draw_warning_diamond(draw, center_x, center_y, radius, color, thickness)
+    draw_line_path(draw, {
+        { center_x, center_y - radius },
+        { center_x + radius, center_y },
+        { center_x, center_y + radius },
+        { center_x - radius, center_y },
+    }, color, thickness, true);
+end
+
+local function draw_warning_crest(draw, x, y, size, brass, brass_dim, text_color)
+    local center_x = x + size / 2;
+    local center_y = y + size / 2;
+    draw:AddCircle({ center_x, center_y }, size * 0.47, brass_dim, 24, math.max(1, size * 0.055));
+    draw:AddCircle({ center_x, center_y }, size * 0.38, brass, 24, math.max(1, size * 0.035));
+    draw:AddText({ x + size * 0.24, y + size * 0.15 }, text_color, 'W');
+end
+
+local function draw_ornate_warning_frame(draw, x, y, width, height, scale, active_theme,
+    severity_color, card_opacity, entry_alpha, urgency_pulse, progress)
+    local center_x = x + width / 2;
+    local center_y = y + height / 2;
+    local line = math.max(1, 1.15 * scale);
+    local heavy = math.max(1, 1.65 * scale);
+    local bg_top = imgui.GetColorU32(color_with_alpha(active_theme.panel_alt,
+        math.min(1, card_opacity * 1.10) * entry_alpha));
+    local bg_bottom = imgui.GetColorU32(color_with_alpha(active_theme.window_bg,
+        card_opacity * entry_alpha));
+    local brass = imgui.GetColorU32(color_with_alpha(active_theme.brass, 0.94 * entry_alpha));
+    local brass_hover = imgui.GetColorU32(color_with_alpha(active_theme.brass_hover, 0.96 * entry_alpha));
+    local brass_dim = imgui.GetColorU32(color_with_alpha(active_theme.brass_dim, 0.82 * entry_alpha));
+    local accent = imgui.GetColorU32(color_with_alpha(severity_color,
+        0.95 * entry_alpha * urgency_pulse));
+    local dark = imgui.GetColorU32(color_with_alpha(active_theme.field_bg,
+        math.min(1, card_opacity * 1.12) * entry_alpha));
+
+    -- Three fills create the subtle side points without requiring a texture or polygon fill.
+    draw:AddRectFilledMultiColor({ x + 10 * scale, y + 4 * scale },
+        { x + width - 10 * scale, y + height - 4 * scale }, bg_top, bg_top, bg_bottom, bg_bottom);
+    draw:AddRectFilled({ x + 3 * scale, center_y - 8 * scale },
+        { x + width - 3 * scale, center_y + 8 * scale }, bg_bottom, 1 * scale);
+    draw:AddRectFilled({ x + 13 * scale, y + 8 * scale },
+        { x + width - 13 * scale, y + 39 * scale }, dark, 1 * scale);
+
+    local outer = {
+        { x + 22 * scale, y + 4 * scale },
+        { center_x - 10 * scale, y + 4 * scale },
+        { center_x, y + 13 * scale },
+        { center_x + 10 * scale, y + 4 * scale },
+        { x + width - 22 * scale, y + 4 * scale },
+        { x + width - 10 * scale, y + 16 * scale },
+        { x + width - 10 * scale, center_y - 10 * scale },
+        { x + width - 2 * scale, center_y },
+        { x + width - 10 * scale, center_y + 10 * scale },
+        { x + width - 10 * scale, y + height - 16 * scale },
+        { x + width - 22 * scale, y + height - 4 * scale },
+        { center_x + 10 * scale, y + height - 4 * scale },
+        { center_x, y + height - 13 * scale },
+        { center_x - 10 * scale, y + height - 4 * scale },
+        { x + 22 * scale, y + height - 4 * scale },
+        { x + 10 * scale, y + height - 16 * scale },
+        { x + 10 * scale, center_y + 10 * scale },
+        { x + 2 * scale, center_y },
+        { x + 10 * scale, center_y - 10 * scale },
+        { x + 10 * scale, y + 16 * scale },
+    };
+    draw_line_path(draw, outer, brass_hover, heavy, true);
+
+    -- The inner rail and stepped corner strokes mimic engraved FFXI menu furniture.
+    draw:AddRect({ x + 15 * scale, y + 9 * scale },
+        { x + width - 15 * scale, y + height - 9 * scale }, brass_dim, 1 * scale, 0, line);
+    draw:AddLine({ x + 15 * scale, y + 40 * scale },
+        { x + width - 15 * scale, y + 40 * scale }, brass_dim, line);
+    draw:AddLine({ x + 24 * scale, y + 43 * scale },
+        { x + width - 24 * scale, y + 43 * scale }, accent, line);
+    draw_warning_diamond(draw, center_x, y + 8.5 * scale, 4.5 * scale, brass_hover, line);
+    draw_warning_diamond(draw, center_x, y + height - 8.5 * scale, 4.5 * scale, brass, line);
+    draw_warning_diamond(draw, x + 7 * scale, center_y, 4 * scale, accent, line);
+    draw_warning_diamond(draw, x + width - 7 * scale, center_y, 4 * scale, accent, line);
+
+    -- A restrained duration rail adds useful timing while echoing the reference gold bars.
+    local rail_left = x + 34 * scale;
+    local rail_right = x + width - 34 * scale;
+    local rail_y = y + height - 17 * scale;
+    draw:AddRectFilled({ rail_left, rail_y }, { rail_right, rail_y + 3 * scale }, brass_dim, 1 * scale);
+    draw:AddRectFilled({ rail_left, rail_y },
+        { rail_left + (rail_right - rail_left) * math.max(0, math.min(1, progress)), rail_y + 3 * scale }, accent, 1 * scale);
+    draw_warning_diamond(draw, rail_left - 4 * scale, rail_y + 1.5 * scale, 3 * scale, brass, line);
+    draw_warning_diamond(draw, rail_right + 4 * scale, rail_y + 1.5 * scale, 3 * scale, brass, line);
+
+    return brass, brass_dim, accent;
+end
+
 local function render_warning_card(state, is_critical, previewing)
     ensure_ui_settings();
     if (warn.ui.theme == nil) then reload_ui_theme(); end
@@ -3418,11 +3519,11 @@ local function render_warning_card(state, is_critical, previewing)
     end
     title = tostring(title or 'WARNING'):upper();
 
-    local width = math.min(display.x * 0.56, math.max(360 * scale, 540 * scale));
+    local width = math.min(display.x * 0.58, math.max(380 * scale, 560 * scale));
     local detail_lines = 0;
     for _ in (detail .. '\n'):gmatch('(.-)\n') do detail_lines = detail_lines + 1; end
     if (detail == '') then detail_lines = 0; end
-    local height = (detail_lines > 0 and (118 + math.max(0, detail_lines - 1) * 18) or 88) * scale;
+    local height = (detail_lines > 0 and (136 + math.max(0, detail_lines - 1) * 18) or 106) * scale;
     local x = tonumber(warn.settings.overlay.position_x) or math.floor((display.x - width) / 2);
     local y = tonumber(warn.settings.overlay.position_y) or math.floor(display.y * 0.24);
     if (severity == 'critical') then
@@ -3447,18 +3548,13 @@ local function render_warning_card(state, is_critical, previewing)
         if (severity == 'danger' and warn.settings.overlay.reduced_motion ~= true) then
             urgency_pulse = 0.72 + 0.28 * math.abs(math.sin(os.clock() * math.pi * 1.10));
         end
-        local bg = color_with_alpha(active_theme.window_bg, card_opacity * entry_alpha);
-        local panel = color_with_alpha(active_theme.panel_alt, math.min(1, card_opacity * 1.08) * entry_alpha);
-        local brass = color_with_alpha(active_theme.brass, 0.90 * entry_alpha);
-        local accent = color_with_alpha(severity_color, 0.95 * entry_alpha * urgency_pulse);
-
-        draw:AddRectFilled({ win_x, win_y }, { win_x + width, win_y + height }, imgui.GetColorU32(bg), 5 * scale);
-        draw:AddRectFilled({ win_x + 1 * scale, win_y + 1 * scale }, { win_x + width - 1 * scale, win_y + 31 * scale }, imgui.GetColorU32(panel), 5 * scale);
-        draw:AddRect({ win_x, win_y }, { win_x + width, win_y + height },
-            imgui.GetColorU32(severity == 'danger' and accent or brass), 5 * scale, 0,
-            math.max(1, scale * (severity == 'critical' and 1.5 or 1.0)));
-        draw:AddRectFilled({ win_x, win_y }, { win_x + 5 * scale, win_y + height }, imgui.GetColorU32(accent), 4 * scale);
-        draw:AddLine({ win_x + 18 * scale, win_y + 31 * scale }, { win_x + width - 18 * scale, win_y + 31 * scale }, imgui.GetColorU32(color_with_alpha(active_theme.brass_dim, entry_alpha)), math.max(1, scale));
+        local duration = math.max(0.1, tonumber(state.duration) or tonumber(warn.settings.overlay.duration) or 4.0);
+        local progress = previewing and 0.72 or (1.0 - math.min(1, elapsed / duration));
+        local brass, brass_dim = draw_ornate_warning_frame(draw, win_x, win_y, width, height, scale,
+            active_theme, severity_color, card_opacity, entry_alpha, urgency_pulse, progress);
+        local text_color = imgui.GetColorU32(color_with_alpha(active_theme.text, entry_alpha));
+        draw_warning_crest(draw, win_x + 20 * scale, win_y + 10 * scale, 25 * scale,
+            brass, brass_dim, text_color);
 
         if (previewing) then
             imgui.SetCursorScreenPos({ win_x, win_y });
@@ -3490,20 +3586,21 @@ local function render_warning_card(state, is_critical, previewing)
             end
         end
 
-        imgui.SetCursorScreenPos({ win_x + 18 * scale, win_y + 8 * scale });
-        set_ui_font_scale(0.82 * scale);
+        imgui.SetCursorScreenPos({ win_x + 53 * scale, win_y + 14 * scale });
+        set_ui_font_scale(0.78 * scale);
         imgui.TextColored(color_with_alpha(severity_color, entry_alpha), severity:upper());
         local prediction = tostring(state.prediction or 'reactive');
-        imgui.SameLine();
-        imgui.TextColored(color_with_alpha(active_theme.text_muted, entry_alpha), prediction == 'readiness' and '  READINESS ESTIMATE' or '  REACTIVE');
+        imgui.SetCursorScreenPos({ win_x + width - 168 * scale, win_y + 14 * scale });
+        imgui.TextColored(color_with_alpha(active_theme.text_muted, entry_alpha),
+            prediction == 'readiness' and 'READINESS ESTIMATE' or 'REACTIVE RECOGNITION');
 
-        imgui.SetCursorScreenPos({ win_x + 22 * scale, win_y + 40 * scale });
-        set_ui_font_scale(1.28 * scale);
+        imgui.SetCursorScreenPos({ win_x + 31 * scale, win_y + 51 * scale });
+        set_ui_font_scale(1.34 * scale);
         imgui.TextColored(color_with_alpha(active_theme.text, entry_alpha), title);
         if (detail ~= '') then
-            imgui.SetCursorScreenPos({ win_x + 22 * scale, win_y + 72 * scale });
-            set_ui_font_scale(0.86 * scale);
-            imgui.PushTextWrapPos(win_x + width - 22 * scale);
+            imgui.SetCursorScreenPos({ win_x + 34 * scale, win_y + 82 * scale });
+            set_ui_font_scale(0.88 * scale);
+            imgui.PushTextWrapPos(win_x + width - 34 * scale);
             imgui.TextWrapped(detail);
             imgui.PopTextWrapPos();
         end
@@ -3690,7 +3787,7 @@ function render_appearance_tab()
     imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 }, 'Drag the launcher normally to reposition it. Click without dragging to open or close Warn.');
 
     imgui.Separator();
-    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Live Warning Cards');
+    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Ornate Live Warning Cards');
     if (imgui.Button(warn.ui.warning_preview_visible and 'Hide Warning Preview' or 'Show Warning Preview')) then
         warn.ui.warning_preview_visible = not warn.ui.warning_preview_visible;
     end
@@ -3698,7 +3795,7 @@ function render_appearance_tab()
     if (imgui.Button('Reset Warning Position')) then
         local display = imgui.GetIO().DisplaySize;
         local preview_scale = get_ui_scale() * math.max(0.70, math.min(1.40, tonumber(s.card_scale) or 1.0)) * 0.86;
-        local preview_width = math.min(display.x * 0.56, math.max(360 * preview_scale, 540 * preview_scale));
+        local preview_width = math.min(display.x * 0.58, math.max(380 * preview_scale, 560 * preview_scale));
         s.position_x = math.floor((display.x - preview_width) / 2);
         s.position_y = math.floor(display.y * 0.24);
         warn.ui.warning_preview_visible = true;
@@ -3734,7 +3831,7 @@ function render_appearance_tab()
         s.reduced_motion = not s.reduced_motion;
         save_settings();
     end
-    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 }, 'Reduced Motion removes entry slides and critical-edge pulsing.');
+    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 }, 'Reduced Motion removes entry slides and decorative alert pulsing.');
 
     local dur = { s.duration };
     if (imgui.SliderFloat('Warning Duration', dur, 1.0, 15.0, '%.1f sec')) then
