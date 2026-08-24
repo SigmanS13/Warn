@@ -31,6 +31,8 @@ warn/
     debuffs.lua
     json.lua
     mechanics.lua
+    active_encounter.lua
+    alert_guard.lua
     encounter_runtime.lua
     sha256.lua
     timer_learning.lua
@@ -75,7 +77,7 @@ Load or reload with:
 
 The GUI has two top-level areas:
 
-- **Encounters** — a metadata-driven browser for verified mechanics, plus a collapsed **Custom Watches** fallback
+- **Encounters** — the live Current Encounter card, a metadata-driven browser for verified mechanics, manual encounter fallback, and a collapsed **Custom Watches** fallback
 - **Options** — Roles, Learning, Database, Debuffs, Alerts, Appearance, and Sound
 
 The Encounters category pane supports independent `[+] / [-]` sections plus **Collapse All**
@@ -85,6 +87,25 @@ warnings; those entries are labeled explicitly so an empty result cannot be mist
 loading failure.
 
 The default configuration is intended to work without setup; advanced customization is optional.
+
+## Warn 3.0 active encounters
+
+Warn automatically recognizes a known boss from verified entity names and incoming actions. A
+nearby recognized boss is labeled **Auto / Nearby**; a matching verified action upgrades that
+profile to **Auto / Confirmed**. The Current Encounter card and compact HUD then show only that
+profile's most urgent verified mechanics and the responses assigned to, and currently usable by,
+this character.
+
+Automatic detection does not turn the encounter index into an alert database. Catalog-only
+encounters can be selected manually for reference, but display **Indexed only — no verified
+automatic alerts**. Unknown abilities are linked to the active encounter in local Learning data
+and remain non-actionable until they are curated and independently verified. When multiple
+profiles match the evidence, Warn asks for a manual choice instead of guessing.
+
+The encounter clears immediately when zoning and automatically after its verified actors have
+been absent for the configurable grace period. Manual selections remain active until the player
+clears them or zones. Detection, the tactical HUD, and the encounter-end grace are available under
+**Options → Alerts**.
 
 Warn reads hostile action starts directly from incoming packet `0x028`, independently of chat
 formatting. **Options → Alerts → Action Packet Layout** defaults to Auto and supports both the
@@ -112,6 +133,24 @@ text, brass frame, or critical screen-edge cue. Card size, edge intensity, durat
 Motion are configurable separately, with test buttons for every level.
 The positioning preview appears only when explicitly requested and closes automatically when
 leaving Appearance; **Reset Warning Position** restores its normal placement.
+
+**Options → Appearance** also provides screen-aware layout buttons for the nine common screen
+regions plus **Center Horizontally** and **Center Vertically**. Anchored layouts stay aligned when
+switching between 1080p, 1440p, or custom interface scaling. Dragging the preview or editing X/Y
+returns the card to Custom placement. Critical cards use the same selected placement while keeping
+their screen-edge effect.
+
+## Notification burst protection
+
+Warn displays one notification card at a time. Rapid duplicates from an AoE event are coalesced
+into that card and do not replay their sound. Distinct mechanics wait in a small priority-aware
+queue: Critical interrupts Danger or Important, queued alerts expire after six seconds, and the
+queue is capped at four by default. Global debuff batches are also deduplicated and hard-capped.
+These limits prevent a large packet/result burst from producing unbounded work or stale alert spam.
+
+Burst protection is enabled by default. **Options → Alerts** exposes the repeat-suppression window,
+maximum queue size, current queue depth, and session suppression/drop counts. Disabling it restores
+the original single-card overwrite behavior but still does not create multiple notification windows.
 
 Advanced theme overrides are data-only. A custom `theme.txt` and optional `launcher.png` can
 be placed in `Ashita/config/addons/warn/themes/<name>/`; theme files cannot execute Lua.
@@ -166,13 +205,53 @@ Current shipped rules are a verified starter set, not a claim of complete FFXI c
 Rules should preserve source/provenance metadata and should not guess whether a move is
 stunnable, silenceable, avoidable, etc.
 
-The v2.10 bundled database contains **445 ability/spell rules, 24 encounter-state rules, and
-430 indexed encounter entries**. Historical Ambuscade Volume 2 has 54 actionable families out
+The v3.0 bundled database contains **490 ability/spell rules, 29 encounter-state rules, and
+512 indexed encounter entries**. Historical Ambuscade Volume 2 has 54 actionable families out
 of 67 indexed families. All 30 indexed HTMB categories have direct rules or inherited actor rules,
 and all 85 encounters on the Geas Fete Aeonic route are indexed. Sortie includes all 17 named
 sector NMs and bosses. Odyssey includes 67 named Sheol/Gaol NMs plus the shared Mimic hazard.
 
-## v2.10 live tactical state
+## v2.12 Abyssea, missions, and Alluvion
+
+Abyssea now indexes 39 major encounters across its nine zones. Twenty-six alerts focus on mechanics
+that materially change what a player should do: Glavoid and Amphitrite absorption, Kukulkan gaze
+states, Cirein-croin and Rani Charm, Briareus Zombie, Resheph and Cirein-croin HP-to-1 hate resets,
+and other high-impact cleanse, interrupt, and positioning calls. Indexed-only NMs remain clearly
+marked research targets and never produce unverified warnings.
+
+The Missions & BCNMs category indexes 42 milestone and classic battles. Unique original mechanics
+now cover the Ancient Vows Mammets, Diabolos in Darkness Named, Snoll Tzar, original Alexander, and
+Up in Arms. Warn's existing actor-based HTMB rules already recognize shared actors such as Shadow
+Lord, the Ark Angels, Eald'narche, Ouryu, Ultima, Tenzen, Promathia, and Cloud of Darkness during
+their original encounters, so they are not duplicated into a second runtime rule set.
+
+Alluvion Skirmish now covers the four Rala Mistmaws, the four Cirdas Mistmaws, Balamor's Adumbration,
+Yorcia Stronghold defense, and floor progression. Windrender and Living Cairn observations provide
+lightweight objective reminders, including the important instruction to continue before using the
+Fenestral Key when the group wants the secondary Mistmaw rewards.
+
+Fresh installations enable sound and select `msg.wav` by default. Upgrades keep the user's saved
+choice. Every valid WAV placed in `sounds` is discovered automatically, including filenames with
+spaces, so the additional bundled effects are available in the sound selector and per-rule overrides.
+
+## v2.11 reusable live objectives
+
+Warn now has one evidence-gated objective component rather than bespoke progress counters for every
+boss. Ongo uses it for Crashing Thunder: completed Earth Magic Bursts advance a cycle-aware two-then-
+three burst objective, but the hazard remains active until the blue proc is explicitly confirmed.
+Aminon's six modes use the same component for their five consecutive counter-element hits; damaging
+wrong-element spells reset the displayed sequence.
+
+Kirin now receives a 52% transition prewarning in Escha - Ru'Aun, with Kouryu's appearance as the
+authoritative fallback. The warning prepares the alliance for the 50% transformation, full enmity
+reset, initial popper target, and Terror protection without affecting classic Kirin elsewhere.
+
+Dynamis - Divergence Circle proximity is pulse-aware. The compact HUD shows distance only after an
+actual Circle action is observed and dismisses that proximity evidence after six seconds. A player
+within 45 yalms receives the stylized critical edge/card cue; idle Circle entities do not create a
+constant range overlay.
+
+## v2.10 multi-target tactical state
 
 Warn now preserves packet target identity for contextual alerts. Ou's Target warning names the
 affected player when the incoming action packet exposes that target, and its previously missing
@@ -181,8 +260,8 @@ affected player when the incoming action packet exposes that target, and its pre
 Verified encounter timers are separate from learned readiness estimates. Aminon's observed Bane
 of Tartarus starts a documented four-minute timer with a 15-second prewarning; its six elemental
 modes populate a compact tactical HUD with the correct response, mode age, and a clearly labeled
-current-mode damage-reduction estimate. Proc completion remains manual until packet evidence is
-reliable enough to avoid false progress.
+current-mode damage-reduction estimate. v2.11 adds evidence-gated five-hit progress from completed
+elemental-damage packets while retaining manual confirmation controls.
 
 Bumba has a Vengeance-aware fetter timer, manual absorbed-element selector, 60-second element-check
 cue, and an opt-in in-memory packet signature recorder for future automatic dust-color validation.
@@ -202,9 +281,9 @@ three-minute countdown from those spells because they prove the stance, not the 
 
 ## v2.8 Skirmish, Unity Wanted, and Vagary
 
-Skirmish now indexes 21 original and Alluvion objectives/NMs. Its first verified layer covers
-Rala's potent poison and petrification risks, the four documented Cirdas Mistmaws, and Yorcia's
-Stronghold-defense objective. Later Mistmaws with sparse documentation remain indexed-only.
+Skirmish originally shipped a 21-entry foundation. v2.12 expands this to 22 entries and adds
+verified rules for the complete Rala Mistmaw set, Balamor, and Rala/Cirdas floor progression on top
+of the original Rala hazards, four Cirdas Mistmaws, and Yorcia Stronghold-defense objective.
 
 Unity Wanted now has all 56 Wanted NMs organized by level and Wanted category. Twenty-nine alerts
 cover the most actionable documented mechanics, including hate resets, Charm, Doom, mine detonation,

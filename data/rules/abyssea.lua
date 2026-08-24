@@ -1,0 +1,85 @@
+-- Major Abyssea encounter coverage. The catalog is deliberately focused on zone bosses,
+-- Caturae, and commonly farmed Empyrean NMs; only independently documented mechanics alert.
+
+return {
+    encounters = {
+        { content='Abyssea', group='La Theine', encounter='Briareus', family='Gigas', status='verified' },
+        { content='Abyssea', group='La Theine', encounter='Carabosse', family='Pixie', status='indexed' },
+        { content='Abyssea', group='La Theine', encounter='Hadhayosh', family='Khimaira', status='indexed' },
+        { content='Abyssea', group='Tahrongi', encounter='Glavoid', family='Sandworm', status='verified' },
+        { content='Abyssea', group='Tahrongi', encounter='Chloris', family='Mandragora', status='indexed' },
+        { content='Abyssea', group='Tahrongi', encounter='Lacovie', family='Adamantoise', status='indexed' },
+        { content='Abyssea', group='Tahrongi', encounter='Iratham', family='Caturae', status='indexed' },
+        { content='Abyssea', group='Tahrongi', encounter='Minhocao', family='Sandworm', status='indexed' },
+        { content='Abyssea', group='Konschtat', encounter='Kukulkan', family='Peiste', status='verified' },
+        { content='Abyssea', group='Konschtat', encounter='Eccentric Eve', family='Morbol', status='indexed' },
+        { content='Abyssea', group='Konschtat', encounter='Turul', family='Amphiptere', status='indexed' },
+        { content='Abyssea', group='Konschtat', encounter='Bloodeye Vileberry', family='Tonberry', status='indexed' },
+        { content='Abyssea', group='Attohwa', encounter='Itzpapalotl', family='Wamoura', status='verified' },
+        { content='Abyssea', group='Attohwa', encounter='Ulhuadshi', family='Sandworm', status='indexed' },
+        { content='Abyssea', group='Attohwa', encounter='Yaanei', family='Caturae', status='indexed' },
+        { content='Abyssea', group='Attohwa', encounter='Ironclad Cleaver', family='Iron Giant', status='indexed' },
+        { content='Abyssea', group='Misareaux', encounter='Cirein-croin', family='Orobon', status='verified' },
+        { content='Abyssea', group='Misareaux', encounter='Sobek', family='Bugard', status='indexed' },
+        { content='Abyssea', group='Misareaux', encounter='Kutharei', family='Caturae', status='indexed' },
+        { content='Abyssea', group='Misareaux', encounter='Ironclad Observer', family='Iron Giant', status='indexed' },
+        { content='Abyssea', group='Vunkerl', encounter='Sedna', family='Ruszor', status='verified' },
+        { content='Abyssea', group='Vunkerl', encounter='Bukhis', family='Taurus', status='indexed' },
+        { content='Abyssea', group='Vunkerl', encounter='Durinn', family='Dvergr', status='indexed' },
+        { content='Abyssea', group='Vunkerl', encounter='Sippoy', family='Caturae', status='indexed' },
+        { content='Abyssea', group='Vunkerl', encounter='Ironclad Executioner', family='Iron Giant', status='indexed' },
+        { content='Abyssea', group='Altepa', encounter='Bennu', family='Greater Bird', status='verified' },
+        { content='Abyssea', group='Altepa', encounter='Rani', family='Caturae', status='verified' },
+        { content='Abyssea', group='Altepa', encounter='Orthrus', family='Cerberus', status='indexed' },
+        { content='Abyssea', group='Altepa', encounter='Hedjedjet', family='Scorpion', status='indexed' },
+        { content='Abyssea', group='Altepa', encounter='Ironclad Smiter', family='Iron Giant', status='indexed' },
+        { content='Abyssea', group='Uleguerand', encounter='Resheph', family='Diremite', status='verified' },
+        { content='Abyssea', group='Uleguerand', encounter='Apademak', family='Khimaira', status='indexed' },
+        { content='Abyssea', group='Uleguerand', encounter='Isgebind', family='Wyrm', status='indexed' },
+        { content='Abyssea', group='Uleguerand', encounter='Pantokrator', family='Chariot', status='indexed' },
+        { content='Abyssea', group='Grauberg', encounter='Amphitrite', family='Uragnite', status='verified' },
+        { content='Abyssea', group='Grauberg', encounter='Raja', family='Caturae', status='verified' },
+        { content='Abyssea', group='Grauberg', encounter='Azdaja', family='Wyrm', status='indexed' },
+        { content='Abyssea', group='Grauberg', encounter='Alfard', family='Hydra', status='indexed' },
+        { content='Abyssea', group='Grauberg', encounter='Ironclad Sunderer', family='Iron Giant', status='indexed' },
+    },
+
+    ability_rules = {
+        { id='abyssea_briareus_colossal_slam', content='Abyssea', group='La Theine', encounter='Briareus', actor='Briareus', event='readies', ability='Colossal Slam', message='ZOMBIE + HEAVY KNOCKBACK!\nMOVE OUT - HEALING WILL FAIL', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='radial', source='https://ffxiclopedia.fandom.com/wiki/Briareus' },
+        { id='abyssea_briareus_mercurial_strike', content='Abyssea', group='La Theine', encounter='Briareus', actor='Briareus', event='readies', ability='Mercurial Strike', message='WATCH DAMAGE RESULT!\n1111 SIGNALS MEIKYO + COLOSSAL SLAM CHAIN', severity='danger', sound='warning.wav', verified=true, prediction='reactive', target_shape='targeted_aoe', source='https://ffxiclopedia.fandom.com/wiki/Briareus' },
+
+        { id='abyssea_glavoid_gorge', content='Abyssea', group='Tahrongi', encounter='Glavoid', actor='Glavoid', event='readies', ability='Gorge', message='HP DRAIN INCOMING!\nSPREAD DAMAGE - PREPARE FOR DISGORGE', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='radial', source='https://www.bg-wiki.com/ffxi/Glavoid' },
+        { id='abyssea_glavoid_disgorge', content='Abyssea', group='Tahrongi', encounter='Glavoid', actor='Glavoid', event='readies', ability='Disgorge', message='LETHAL FRONTAL DAMAGE!\nSTUN OR LEAVE THE CONE', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='conal', source='https://www.bg-wiki.com/ffxi/Glavoid', counter={type='spell',name='Stun',label='STUN DISGORGE!',responsibility='interrupt'} },
+        { id='abyssea_glavoid_extreme_purgation', content='Abyssea', group='Tahrongi', encounter='Glavoid', actor='Glavoid', event='readies', ability='Extreme Purgation', message='MASS STATUS DRAIN!\nREBUFF AFTER THE MOVE', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='radial', source='https://ffxiclopedia.fandom.com/wiki/Glavoid' },
+        { id='abyssea_glavoid_desiccation', content='Abyssea', group='Tahrongi', encounter='Glavoid', actor='Glavoid', event='readies', ability='Desiccation', message='JOB ABILITY RECAST RESET!', severity='danger', sound='warning.wav', verified=true, prediction='reactive', target_shape='radial', source='https://ffxiclopedia.fandom.com/wiki/Glavoid' },
+
+        { id='abyssea_kukulkan_calcifying_mist', content='Abyssea', group='Konschtat', encounter='Kukulkan', actor='Kukulkan', event='readies', ability='Calcifying Mist', message='GRADUAL PETRIFICATION!\nSTONA READY', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='radial', source='https://ffxiclopedia.fandom.com/wiki/Kukulkan', counter={type='spell',name='Stona',label='CAST STONA!',responsibility='cleanse'} },
+        { id='abyssea_kukulkan_grim_glower', content='Abyssea', group='Konschtat', encounter='Kukulkan', actor='Kukulkan', event='readies', ability='Grim Glower', message='YELLOW-EYE PETRIFY GAZE!\nTURN AWAY', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='gaze', source='https://ffxiclopedia.fandom.com/wiki/Kukulkan' },
+        { id='abyssea_kukulkan_oppressive_gaze', content='Abyssea', group='Konschtat', encounter='Kukulkan', actor='Kukulkan', event='readies', ability='Oppressive Gaze', message='BLUE-EYE TERROR + ZOMBIE!\nTURN AWAY', severity='critical', sound='alarm.wav', verified=true, prediction='scripted', target_shape='gaze', source='https://ffxiclopedia.fandom.com/wiki/Kukulkan' },
+
+        { id='abyssea_itzpapalotl_fire_break', content='Abyssea', group='Attohwa', encounter='Itzpapalotl', actor='Itzpapalotl', event='readies', ability='Fire Break', message='HEAVY FIRE DAMAGE!\nBARFIRE / DEFENSIVES', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='conal', source='https://ffxiclopedia.fandom.com/wiki/Itzpapalotl', counter={type='spell',name='Barfira',label='CAST BARFIRA!',responsibility='support'} },
+        { id='abyssea_itzpapalotl_exuviation', content='Abyssea', group='Attohwa', encounter='Itzpapalotl', actor='Itzpapalotl', event='uses', ability='Exuviation', message='DEBUFFS ERASED + HEAL!\nLIMIT ENFEEBLES / REAPPLY ESSENTIALS', severity='danger', sound='warning.wav', verified=true, prediction='reactive', target_shape='self', source='https://ffxiclopedia.fandom.com/wiki/Itzpapalotl' },
+        { id='abyssea_itzpapalotl_erratic_flutter', content='Abyssea', group='Attohwa', encounter='Itzpapalotl', actor='Itzpapalotl', event='uses', ability='Erratic Flutter', message='POTENT HASTE ACTIVE!\nDISPEL', severity='danger', sound='warning.wav', verified=true, prediction='reactive', target_shape='self', source='https://ffxiclopedia.fandom.com/wiki/Itzpapalotl', counter={type='spell',name='Dispel',label='DISPEL HASTE!',responsibility='support'} },
+
+        { id='abyssea_cirein_mayhem_lantern', content='Abyssea', group='Misareaux', encounter='Cirein-croin', actor='Cirein-croin', event='readies', ability='Mayhem Lantern', message='AOE CHARM + SHOCK!\nSTUN OR BACKLINE WITHDRAW', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='radial', source='https://ffxiclopedia.fandom.com/wiki/Cirein-croin', counter={type='spell',name='Stun',label='STUN CHARM!',responsibility='interrupt'} },
+        { id='abyssea_cirein_deathgnash', content='Abyssea', group='Misareaux', encounter='Cirein-croin', actor='Cirein-croin', event='readies', ability='Deathgnash', message='HP TO 1 + ENMITY RESET!\nHEAL / TANK RECLAIM', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='single', source='https://ffxiclopedia.fandom.com/wiki/Cirein-croin' },
+        { id='abyssea_cirein_abominable_belch', content='Abyssea', group='Misareaux', encounter='Cirein-croin', actor='Cirein-croin', event='readies', ability='Abominable Belch', message='PARALYSIS + SILENCE + PLAGUE!\nCLEANSE PARTY', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='radial', source='https://ffxiclopedia.fandom.com/wiki/Cirein-croin', responsibility='cleanse' },
+
+        { id='abyssea_sedna_hydro_wave', content='Abyssea', group='Vunkerl', encounter='Sedna', actor='Sedna', event='uses', ability='Hydro Wave', message='WATER ABSORPTION ACTIVE!\nAVOID WATER DAMAGE', severity='danger', sound='warning.wav', verified=true, prediction='reactive', target_shape='radial', source='https://ffxiclopedia.fandom.com/wiki/Sedna' },
+        { id='abyssea_sedna_hydro_blast', content='Abyssea', group='Vunkerl', encounter='Sedna', actor='Sedna', event='uses', ability='Hydro Blast', message='MAGIC SHIELD + SILENCE AURA!\nCASTERS KEEP MAX RANGE', severity='danger', sound='warning.wav', verified=true, prediction='reactive', target_shape='conal', source='https://ffxiclopedia.fandom.com/wiki/Sedna' },
+
+        { id='abyssea_bennu_dread_wind', content='Abyssea', group='Altepa', encounter='Bennu', actor='Bennu', event='readies', ability='Dread Wind', message='AOE TERROR + SHADOW WIPE!\nALL FOLLOW-UP ATTACKS WILL CRIT', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='radial', source='https://www.bg-wiki.com/ffxi/Bennu' },
+        { id='abyssea_rani_enthrall', content='Abyssea', group='Altepa', encounter='Rani', actor='Rani', event='readies', ability='Enthrall', message='AOE CHARM INCOMING!\nMOVE BEYOND 15\'', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='radial', source='https://www.bg-wiki.com/ffxi/Rani' },
+        { id='abyssea_rani_meteor', content='Abyssea', group='Altepa', encounter='Rani', actor='Rani', event='starts_casting', ability='Meteor', message='METEOR CASTING!\nSTUN OR MITIGATE', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='radial', source='https://www.bg-wiki.com/ffxi/Rani', counter={type='spell',name='Stun',label='STUN METEOR!',responsibility='interrupt'} },
+
+        { id='abyssea_resheph_meikyo', content='Abyssea', group='Uleguerand', encounter='Resheph', actor='Resheph', event='uses', ability='Meikyo Shisui', message='TP-MOVE CHAIN ACTIVE!\nTARSAL SLAM EXPECTED', severity='critical', sound='alarm.wav', verified=true, prediction='scripted', target_shape='self', source='https://ffxiclopedia.fandom.com/wiki/Resheph' },
+        { id='abyssea_resheph_tarsal_slam', content='Abyssea', group='Uleguerand', encounter='Resheph', actor='Resheph', event='readies', ability='Tarsal Slam', message='HP TO 1 + ENMITY RESET!\nHEAL / TANK RECLAIM', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='conal', source='https://ffxiclopedia.fandom.com/wiki/Resheph' },
+
+        { id='abyssea_amphitrite_palsynyxis', content='Abyssea', group='Grauberg', encounter='Amphitrite', actor='Amphitrite', event='uses', ability='Palsynyxis', message='PHYSICAL ABSORB MODE!\nUSE MAGIC DAMAGE', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='single', source='https://www.bg-wiki.com/ffxi/Amphitrite' },
+        { id='abyssea_amphitrite_painful_whip', content='Abyssea', group='Grauberg', encounter='Amphitrite', actor='Amphitrite', event='uses', ability='Painful Whip', message='MAGICAL ABSORB MODE!\nUSE PHYSICAL DAMAGE', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='single', source='https://www.bg-wiki.com/ffxi/Amphitrite' },
+        { id='abyssea_amphitrite_virulent_haze', content='Abyssea', group='Grauberg', encounter='Amphitrite', actor='Amphitrite', event='readies', ability='Virulent Haze', message='WRONG DAMAGE TYPE TRIGGERED!\nADDLE + BURN INCOMING', severity='danger', sound='warning.wav', verified=true, prediction='reactive', target_shape='conal', source='https://www.bg-wiki.com/ffxi/Amphitrite' },
+        { id='abyssea_raja_royal_decree', content='Abyssea', group='Grauberg', encounter='Raja', actor='Raja', event='readies', ability='Royal Decree', message='HIGH AOE + SUPPORT JOB LOCK!\nMITIGATE / RECOVER', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='radial', source='https://ffxiclopedia.fandom.com/wiki/Raja' },
+    },
+
+    state_rules = {},
+};

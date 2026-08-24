@@ -2,6 +2,7 @@
 -- This module deliberately contains no Ashita or ImGui calls so its certainty rules can be tested.
 
 local runtime = {};
+local objectiveRuntime = require('data.objective_runtime');
 
 runtime.bumba_elements = {
     { id='unknown', label='Unknown' },
@@ -31,9 +32,15 @@ end
 function runtime.new_state()
     return {
         timers = {},
+        objectives = {
+            aminon=objectiveRuntime.new('aminon_elemental_proc'),
+            ongo=objectiveRuntime.new('ongo_fetter_proc'),
+        },
         aminon = { active=false, mode=nil, response=nil, started_at=nil, proc_confirmed=false, proc_at=nil },
+        ongo = { active=false, cycle=0, started_at=nil, shock_active=false, proc_confirmed=false, proc_at=nil },
         bumba = { active=false, element='unknown', element_started_at=nil, vengeance='v25', engaged_at=nil },
-        circles = { active=false, alive=0, max_seen=0, reliable=false, cleared=nil, last_seen_at=nil },
+        circles = { active=false, alive=0, max_seen=0, reliable=false, cleared=nil, last_seen_at=nil,
+            pulses={}, last_player_warning_at=0 },
         shinryu = {
             active=false, wings='unknown', wings_observed_at=nil, next_shift_at=nil, wings_evidence=nil,
             doom={ active=false, pending=false, readied_at=nil, started_at=nil, expires_at=nil,
@@ -107,13 +114,63 @@ function runtime.set_aminon_mode(state, mode, response, now)
     state.aminon.started_at = tonumber(now) or 0;
     state.aminon.proc_confirmed = false;
     state.aminon.proc_at = nil;
+    objectiveRuntime.start(state.objectives.aminon, {
+        id='aminon_elemental_proc', label='AMINON ELEMENTAL PROC',
+        instruction='LAND FIVE CONSECUTIVE ' .. state.aminon.response:upper() .. ' ELEMENTAL HITS',
+        hazard='Uncleared mode accumulates approximately 5% DT every 30 seconds.',
+        evidence_type='elemental_hit', element=state.aminon.response, required=5,
+        cycle=1, certainty='verified-mechanic/packet-evidence',
+    }, now);
 end
 
 function runtime.mark_aminon_proc(state, now)
     if state == nil or not state.aminon.active then return false; end
     state.aminon.proc_confirmed = true;
     state.aminon.proc_at = tonumber(now) or 0;
+    objectiveRuntime.confirm(state.objectives.aminon, now, 'confirmed');
     return true;
+end
+
+function runtime.observe_aminon_element(state, evidence, now)
+    if (state == nil or not state.aminon.active) then return false, false; end
+    if (tostring(evidence and evidence.element or ''):lower() ~= tostring(state.aminon.response or ''):lower()) then
+        objectiveRuntime.reset_progress(state.objectives.aminon, now);
+        return false, false, true;
+    end
+    local added, threshold = objectiveRuntime.observe(state.objectives.aminon, evidence, now);
+    if (threshold) then runtime.mark_aminon_proc(state, now); end
+    return added, threshold;
+end
+
+function runtime.start_ongo_proc(state, now)
+    if (state == nil) then return nil; end
+    state.ongo.active = true;
+    state.ongo.cycle = math.max(0, tonumber(state.ongo.cycle) or 0) + 1;
+    state.ongo.started_at = tonumber(now) or 0;
+    state.ongo.shock_active = true;
+    state.ongo.proc_confirmed = false;
+    state.ongo.proc_at = nil;
+    local required = math.min(3, 1 + state.ongo.cycle);
+    return objectiveRuntime.start(state.objectives.ongo, {
+        id='ongo_fetter_proc', label='ONGO FETTER PROC',
+        instruction='LAND EARTH MAGIC BURSTS',
+        hazard='Fetters active; Shock is approximately 150 HP per tick.',
+        evidence_type='magic_burst', element='earth', required=required,
+        cycle=state.ongo.cycle, certainty='verified-mechanic/packet-evidence',
+    }, now);
+end
+
+function runtime.observe_ongo_burst(state, evidence, now)
+    if (state == nil or not state.ongo.active) then return false, false; end
+    return objectiveRuntime.observe(state.objectives.ongo, evidence, now);
+end
+
+function runtime.mark_ongo_proc(state, now)
+    if (state == nil or not state.ongo.active) then return false; end
+    state.ongo.proc_confirmed = true;
+    state.ongo.proc_at = tonumber(now) or 0;
+    state.ongo.shock_active = false;
+    return objectiveRuntime.confirm(state.objectives.ongo, now, 'blue-proc-confirmed');
 end
 
 function runtime.aminon_dt_estimate(state, now)
@@ -164,6 +221,42 @@ function runtime.circle_damage_reduction(state)
     local circles = state and state.circles or nil;
     if circles == nil or circles.cleared == nil then return nil; end
     return math.max(0, 80 - (circles.cleared * 10));
+end
+
+function runtime.observe_circle_pulse(state, actorId, now, position)
+    if (state == nil or state.circles == nil) then return nil; end
+    local circles = state.circles;
+    circles.active = true;
+    local key = tostring(tonumber(actorId) or actorId or 'unknown');
+    circles.pulses[key] = {
+        actor_id=tonumber(actorId) or 0, at=tonumber(now) or 0,
+        x=position and tonumber(position.x) or nil,
+        y=position and tonumber(position.y) or nil,
+        z=position and tonumber(position.z) or nil,
+    };
+    return circles.pulses[key];
+end
+
+function runtime.nearest_recent_circle_pulse(state, playerPosition, now, maximumAge)
+    local circles = state and state.circles or nil;
+    if (circles == nil or type(playerPosition) ~= 'table') then return nil; end
+    now = tonumber(now) or 0;
+    maximumAge = math.max(0.5, tonumber(maximumAge) or 6.0);
+    local nearest = nil;
+    for key, pulse in pairs(circles.pulses or {}) do
+        if ((now - (tonumber(pulse.at) or 0)) > maximumAge) then
+            circles.pulses[key] = nil;
+        elseif (pulse.x ~= nil and pulse.y ~= nil and pulse.z ~= nil) then
+            local dx = pulse.x - (tonumber(playerPosition.x) or 0);
+            local dy = pulse.y - (tonumber(playerPosition.y) or 0);
+            local dz = pulse.z - (tonumber(playerPosition.z) or 0);
+            local distance = math.sqrt(dx * dx + dy * dy + dz * dz);
+            if (nearest == nil or distance < nearest.distance) then
+                nearest = { actor_id=pulse.actor_id, at=pulse.at, distance=distance };
+            end
+        end
+    end
+    return nearest;
 end
 
 function runtime.record_bumba_packet(state, signature, details)

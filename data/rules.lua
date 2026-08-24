@@ -6,6 +6,8 @@ local modules = {
     'catalog.lua',
     'generic.lua',
     'high_tier_battlefields.lua',
+    'missions_bcnms.lua',
+    'abyssea.lua',
     'omen.lua',
     'sortie.lua',
     'odyssey.lua',
@@ -22,7 +24,7 @@ local modules = {
 };
 
 local result = {
-    version = 14,
+    version = 17,
     ability_rules = {},
     state_rules = {},
     catalog = {},

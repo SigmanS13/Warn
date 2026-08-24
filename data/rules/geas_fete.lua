@@ -149,5 +149,8 @@ return {
         { id='geas_zerde_gnash_guttle', content='Geas Fete', group='Reisenjima / HELM', encounter='Zerde', actor='Zerde', event='readies', ability="Gnash 'n Guttle", message='50% MAX HP DOWN INCOMING!', severity='critical', sound='alarm.wav', verified=true, prediction='reactive', target_shape='cone', source='https://www.bg-wiki.com/ffxi/Zerde' },
     },
 
-    state_rules = {},
+    state_rules = {
+        { id='geas_kirin_kouryu_transition', content='Geas Fete', group="Escha - Ru'Aun / Kirin", encounter='Kirin / Kouryu', type='entity_hp_threshold', actor='Kirin', threshold=52, zone_ids={289}, message='KOURYU TRANSITION IMMINENT AT 50%!\nPREPARE FOR FULL ENMITY RESET - STEADFAST TONIC FOR TERROR', severity='critical', sound='alarm.wav', once_per_spawn=true, verified=true, prediction='scripted', source='https://www.bg-wiki.com/ffxi/Kouryu' },
+        { id='geas_kouryu_spawn_transition', content='Geas Fete', group="Escha - Ru'Aun / Kirin", encounter='Kirin / Kouryu', type='entity_present', actor='Kouryu', zone_ids={289}, message='KOURYU ACTIVE - FULL ENMITY RESET!\nPOPPER IS INITIAL TARGET - STEADFAST TONIC FOR TERROR', severity='critical', sound='alarm.wav', once_per_spawn=true, verified=true, prediction='reactive', source='https://www.bg-wiki.com/ffxi/Kouryu' },
+    },
 };

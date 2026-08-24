@@ -1,5 +1,42 @@
 # Changelog
 
+## 3.0.1
+- Added centralized notification burst protection for AoE-heavy events. Rapid repeats of the same rule share one card and one sound, while distinct events enter a small priority-aware queue instead of repeatedly overwriting the live alert.
+- Capped the pending notification queue at four by default, capped recent deduplication history, and expire queued alerts after six seconds so bursts cannot create unbounded memory growth or a long procession of stale instructions.
+- Critical alerts preempt Important/Danger cards. Equal- or lower-priority events wait without playing sound until actually shown; excess routine events are discarded safely.
+- Added independent deduplication and a 64-event hard cap to the global debuff prewarning/loss batches. The existing action parser continues to reject implausible packets over 64 targets or 16 results per target.
+- Added configurable **Repeat Suppression** and **Maximum Queued Alerts** controls plus live suppression/drop telemetry under **Options → Alerts**.
+- Added screen-aware warning-card layout presets under **Options → Appearance**: all nine screen regions, **Center Horizontally**, and **Center Vertically**. Presets remain aligned across scale/resolution changes, while dragging or exact X/Y entry switches to Custom placement.
+- Critical cards now respect the selected layout instead of being forced over the upper center, while retaining their full screen-edge awareness effect.
+- Added burst-manager regression coverage. All **56 Lua files parse cleanly** and all **19 test suites pass**.
+
+## 3.0.0
+- Added the automatic **Active Encounter** system. Warn now activates a curated profile from verified hostile entity names, upgrades it to confirmed when a matching action is observed, and never treats catalog-only or unknown data as an alert source.
+- Added a GUI-first **Current Encounter** card with confidence/evidence labels, the most urgent verified mechanics, role- and capability-aware available responses, one-click browser focus, manual selection, and an explicit indexed-only state.
+- Expanded the compact tactical HUD to show the active encounter and only its highest-priority verified mechanics and currently available assigned actions, alongside existing timers and encounter objectives.
+- Added encounter lifecycle handling: zone changes reset the profile immediately, automatic encounters end after a configurable absence grace period, switching encounters clears stale specialized runtime state, and manual profiles remain stable until cleared or zoning.
+- Scoped duplicate action names and state rules to the active encounter. Ambiguous evidence is surfaced for manual selection instead of using the first database match, reducing cross-content false alerts.
+- Linked unknown hostile actions to the current encounter in local Learning data and added a session-only unverified-observation view. These observations remain backstage and cannot generate automatic warnings.
+- Reused Warn's existing entity-map pass for detection rather than adding another continuous scan. Automatic detection, HUD visibility, and encounter-end grace are configurable under **Options → Alerts**.
+- Added a pure detector/lifecycle module and real-database regression coverage. All **54 Lua files parse cleanly** and all **18 test suites pass**. The bundled rule database remains **490 ability/spell rules, 29 encounter-state rules, and 512 indexed encounter entries**.
+
+## 2.12.0
+- Added 39 major Abyssea encounters across all nine zones, with 26 verified alerts for 11 high-value bosses. Coverage includes absorption modes, Charm, Doom/Zombie, HP-to-1 and enmity resets, Petrification gazes, lethal conal attacks, and dispel/cleanse responses.
+- Added a 42-entry Missions & BCNMs index spanning nation missions, every expansion story, add-on scenarios, and classic orb battlefields. New direct rules cover Ancient Vows, Darkness Named, Flames for the Dead, original Alexander, and Up in Arms; existing actor-based high-tier rules continue to recognize shared mission bosses at runtime without duplicate alerts.
+- Expanded Alluvion Skirmish from six to 20 action rules and from two to four state rules. All four Rala Mistmaws, Balamor's Adumbration, Windrender objectives, and Living Cairn continuation guidance now have verified coverage.
+- Corrected Balamor's Adumbration from the Yorcia defense group to the Rala/Cirdas bonus-floor group.
+- Changed fresh-install sound defaults to enabled with `msg.wav`. Existing saved sound preferences are preserved, all WAV files in `sounds` remain selectable, and the expanded fallback scan now includes the newly bundled voice/effect files.
+- Added Abyssea, Missions/BCNMs, and expanded Alluvion regression coverage. The bundled database now contains **490 ability/spell rules, 29 encounter-state rules, and 512 indexed encounter entries**.
+
+## 2.11.0
+- Added a reusable, evidence-gated objective tracker for encounter mechanics with configurable evidence type, element, threshold, cycle, progress, and explicit completion certainty.
+- Added Ongo's Crashing Thunder objective: Warn tracks the first-cycle two and later-cycle three Earth Magic Bursts from completed action packets, keeps Fetters / Shock active until the blue proc is confirmed, and provides a manual confirmation fallback.
+- Migrated Aminon's six elemental modes to the reusable tracker. Completed matching elemental damage advances a visible five-hit sequence; a damaging wrong-element spell resets it, and the existing mode-age / accumulated-DT estimate remains available.
+- Added an Escha - Ru'Aun-scoped Kirin pre-transition warning at 52% HP plus a Kouryu-presence fallback that reports the full enmity reset, initial popper target, and Terror preparation.
+- Reworked Dynamis - Divergence proximity into pulse-aware evidence. Warn shows distance and a critical edge/card cue only after an Elemental Circle actually completes a pulse within the documented danger radius; it does not run a permanent GPS-style overlay.
+- Kept Bumba's mode handling specialized and manually authoritative until stable retail packet evidence exists.
+- Added objective, Ongo, Aminon, Circle-pulse, and Kirin/Kouryu regression coverage. The bundled database now contains **445 ability/spell rules, 26 encounter-state rules, and 430 indexed encounter entries**.
+
 ## 2.10.0
 - Replaced the first-target-only `0x028` reader with a complete variable-length parser that retains every target, every action result, and optional additional/spikes effects while preserving the original compatibility fields.
 - Added a read-only `0x029` status-observation parser as the foundation for per-party-member encounter triage.

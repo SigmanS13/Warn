@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '2.10.0';
+addon.version   = '3.0.1';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -47,6 +47,16 @@ local uiTextures = require('ui.textures');
 local uiPortraits = require('ui.portraits');
 local encounterBrowser = require('ui.encounter_browser');
 local encounterRuntime = require('data.encounter_runtime');
+local activeEncounter = require('data.active_encounter');
+local alertGuard = require('data.alert_guard');
+
+local spellElementNames = {
+    [0]='fire', [1]='ice', [2]='wind', [3]='earth', [4]='thunder', [5]='water', [6]='light', [7]='dark',
+};
+local magicBurstMessages = {
+    [252]=true, [265]=true, [268]=true, [269]=true, [271]=true,
+    [272]=true, [274]=true, [275]=true, [379]=true, [650]=true,
+};
 
 local COMMUNITY_MANIFEST_URL = 'https://raw.githubusercontent.com/SigmanS13/Warn/main/community/manifest.json';
 
@@ -78,6 +88,11 @@ local default_settings = T{
         edge_enabled    = true,
         edge_intensity  = 0.65,
         reduced_motion  = false,
+        position_anchor = 'custom',
+        burst_protection = true,
+        repeat_suppression = 1.25,
+        alert_queue_limit = 4,
+        alert_queue_max_age = 6.0,
     },
     ui = T{
         theme                = 'vana_tactical',
@@ -96,8 +111,8 @@ local default_settings = T{
         encounter_hud_opacity = 0.86,
     },
     sound = T{
-        enabled  = false,
-        selected = 'None',
+        enabled  = true,
+        selected = 'msg.wav',
     },
     context = T{
         enabled           = true,
@@ -107,6 +122,8 @@ local default_settings = T{
         packet_recognition = true,
         packet_layout      = 'auto', -- auto / retail / legacy (SimpleLog / DSP)
         encounter_hud      = true,
+        encounter_detection = true,
+        encounter_dismiss_seconds = 12,
         encounter_diagnostics = false,
         bumba_element      = 'unknown',
         bumba_vengeance    = 'v25',
@@ -229,7 +246,7 @@ warn = T{
 
     abilities = T{},        -- array of T{ name, enabledBool }
     enabledLookup = T{},    -- map: lower(name) -> original-case name
-    soundFiles = T{ 'None', 'beep.wav', 'alert.wav', 'warning.wav', 'alarm.wav' },
+    soundFiles = T{ 'None', 'msg.wav', 'beep.wav', 'alert.wav', 'warning.wav', 'alarm.wav' },
 
     isGuiOpen = T{ false },
     guiSizeInitialized = false,
@@ -240,6 +257,8 @@ warn = T{
     selectedRuleId = nil,
     encounterContent = nil,
     encounterGroup = nil,
+    manualEncounterSearch = T{ '' },
+    manualEncounterOpen = T{ false },
     customWatchesOpen = T{ false },
     optionsSection = T{ 1 },
     mainTab = T{ 1 },
@@ -262,6 +281,7 @@ warn = T{
         warning_preview_drag_mouse_x = nil,
         warning_preview_drag_mouse_y = nil,
         warning_preview_drag_active = false,
+        encounter_hud_cache = { key=nil, next_refresh=0, rules={}, counters={} },
     },
 
     debug = false,
@@ -326,6 +346,11 @@ warn = T{
     },
 
     encounter = encounterRuntime.new_state(),
+    activeEncounter = T{
+        engine = activeEncounter,
+        index = nil,
+        state = activeEncounter.new_state(),
+    },
 
     community = T{
         engine = nil,
@@ -355,6 +380,11 @@ warn = T{
         severity = 'important',
         prediction = 'reactive',
         startTime = 0,
+    },
+
+    alertGuard = T{
+        engine = alertGuard,
+        state = alertGuard.new_state(),
     },
 
     critical = T{
@@ -584,6 +614,8 @@ local function ensure_context_settings()
             packet_recognition = true,
             packet_layout = 'auto',
             encounter_hud = true,
+            encounter_detection = true,
+            encounter_dismiss_seconds = 12,
             encounter_diagnostics = false,
             bumba_element = 'unknown',
             bumba_vengeance = 'v25',
@@ -598,6 +630,8 @@ local function ensure_context_settings()
     if (warn.settings.context.state_triggers == nil) then warn.settings.context.state_triggers = true; end
     if (warn.settings.context.packet_recognition == nil) then warn.settings.context.packet_recognition = true; end
     if (warn.settings.context.encounter_hud == nil) then warn.settings.context.encounter_hud = true; end
+    if (warn.settings.context.encounter_detection == nil) then warn.settings.context.encounter_detection = true; end
+    if (warn.settings.context.encounter_dismiss_seconds == nil) then warn.settings.context.encounter_dismiss_seconds = 12; end
     if (warn.settings.context.encounter_diagnostics == nil) then warn.settings.context.encounter_diagnostics = false; end
     if (warn.settings.context.bumba_element == nil) then warn.settings.context.bumba_element = 'unknown'; end
     if (warn.settings.context.bumba_vengeance == nil) then warn.settings.context.bumba_vengeance = 'v25'; end
@@ -633,6 +667,11 @@ local function ensure_ui_settings()
     if (overlay.edge_enabled == nil) then overlay.edge_enabled = true; end
     if (overlay.edge_intensity == nil) then overlay.edge_intensity = 0.65; end
     if (overlay.reduced_motion == nil) then overlay.reduced_motion = false; end
+    if (overlay.position_anchor == nil) then overlay.position_anchor = 'custom'; end
+    if (overlay.burst_protection == nil) then overlay.burst_protection = true; end
+    if (overlay.repeat_suppression == nil) then overlay.repeat_suppression = 1.25; end
+    if (overlay.alert_queue_limit == nil) then overlay.alert_queue_limit = 4; end
+    if (overlay.alert_queue_max_age == nil) then overlay.alert_queue_max_age = 6.0; end
 end
 
 local function get_ui_scale()
@@ -977,8 +1016,18 @@ function load_context_rules()
                 stationary_since = nil,
                 status_active = nil,
                 last_status_change = 0,
+                last_hpp = nil,
             };
         end
+    end
+
+    warn.activeEncounter.index = warn.activeEncounter.engine.build_index(
+        warn.rules.catalog, warn.rules.ability_rules, warn.rules.state_rules);
+    -- Reloading curated/community data should preserve an active profile only when the
+    -- same stable content/group/encounter key still exists in the rebuilt index.
+    if (warn.activeEncounter.state.active_key ~= nil and
+        warn.activeEncounter.index.profiles[warn.activeEncounter.state.active_key] == nil) then
+        warn.activeEncounter.engine.clear(warn.activeEncounter.state, 'database reloaded', os.clock());
     end
 end
 
@@ -1396,7 +1445,8 @@ local function find_context_ability_rule(eventType, abilityName, rawMessage)
     end
 
     local lname = abilityName:lower();
-    local generic = nil;
+    local actorMatches = {};
+    local genericMatches = {};
     for _, rule in ipairs(warn.rules.ability_rules or {}) do
         if (is_rule_enabled(rule)) then
         local eventMatches = (rule.event == nil or rule.event == eventType);
@@ -1412,15 +1462,20 @@ local function find_context_ability_rule(eventType, abilityName, rawMessage)
         if (eventMatches and abilityMatches) then
             if (rule.actor ~= nil) then
                 if (raw_message_matches_rule_actor(rawMessage, rule)) then
-                    return rule;
+                    table.insert(actorMatches, rule);
                 end
-            elseif (generic == nil) then
-                generic = rule;
+            else
+                table.insert(genericMatches, rule);
             end
         end
         end
     end
-    return generic;
+    local selected = warn.activeEncounter.engine.select_matching_rule(
+        warn.activeEncounter.index, warn.activeEncounter.state, actorMatches);
+    if (selected ~= nil) then return selected; end
+    if (#actorMatches > 0) then return nil; end
+    return warn.activeEncounter.engine.select_matching_rule(
+        warn.activeEncounter.index, warn.activeEncounter.state, genericMatches);
 end
 
 local function find_entity_by_name(name, cachedIndex)
@@ -1453,31 +1508,31 @@ local function entity_position(entity)
     return tonumber(p.X), tonumber(p.Y), tonumber(p.Z);
 end
 
-local function trigger_context_rule(rule, fallbackName, messageOverride, context)
-    if (rule == nil or rule.verified ~= true or not is_rule_enabled(rule)) then return false; end
-
-    local text = build_context_text(rule, messageOverride, context);
-    if (text == nil) then return false; end
-
-    warn.active.name = fallbackName or rule.ability or rule.actor or 'WARNING';
-    warn.active.text = text;
-    warn.active.rule_id = rule.id;
-    local effectiveSound = resolve_rule_sound(rule);
-    warn.active.sound = effectiveSound;
-    warn.active.duration = rule.duration;
-    warn.active.severity = tostring(rule.severity or 'important'):lower();
-    warn.active.prediction = tostring(rule.prediction or 'reactive'):lower();
+local function activate_warning_payload(payload)
+    if (payload == nil) then return false; end
+    warn.active.name = payload.name or 'WARNING';
+    warn.active.text = payload.text;
+    warn.active.rule_id = payload.rule_id;
+    warn.active.sound = payload.sound;
+    warn.active.sound_overridden = payload.sound_overridden;
+    warn.active.sound_policy = payload.sound_policy;
+    warn.active.duration = payload.duration;
+    warn.active.severity = tostring(payload.severity or 'important'):lower();
+    warn.active.prediction = tostring(payload.prediction or 'reactive'):lower();
+    warn.active.dedupe_key = payload.dedupe_key;
     warn.active.startTime = os.clock();
     warn.active.firing = true;
 
-    if (warn.settings.sound.enabled) then
+    if (payload.sound_policy == 'debuff') then
+        if (warn.settings.debuffs.sound_enabled) then play_sound_file(payload.sound); end
+    elseif (payload.sound_policy == 'global') then
+        if (warn.settings.sound.enabled) then play_selected_sound(); end
+    elseif (warn.settings.sound.enabled) then
         if (warn.settings.context.contextual_sounds) then
-            local sound, overridden = resolve_rule_sound(rule);
-            if (overridden) then
-                -- Explicit 'None' is respected and intentionally suppresses this rule's sound.
-                play_sound_file(sound);
-            elseif (sound ~= nil and sound ~= '') then
-                play_sound_file(sound);
+            if (payload.sound_overridden) then
+                play_sound_file(payload.sound);
+            elseif (payload.sound ~= nil and payload.sound ~= '') then
+                play_sound_file(payload.sound);
             else
                 play_selected_sound();
             end
@@ -1485,6 +1540,51 @@ local function trigger_context_rule(rule, fallbackName, messageOverride, context
             play_selected_sound();
         end
     end
+    return true;
+end
+
+local function submit_warning_payload(payload)
+    if (payload == nil) then return false; end
+    ensure_ui_settings();
+    local overlay = warn.settings.overlay;
+    if (overlay.burst_protection ~= true) then return activate_warning_payload(payload); end
+
+    local currentlyVisible = nil;
+    if (warn.critical.firing) then
+        currentlyVisible = { firing=true, severity='critical', dedupe_key='__critical_debuff__' };
+    elseif (warn.active.firing) then
+        currentlyVisible = warn.active;
+    end
+    local decision, ready = warn.alertGuard.engine.submit(
+        warn.alertGuard.state, payload, currentlyVisible, os.clock(), {
+            dedupe_window=overlay.repeat_suppression,
+            queue_limit=overlay.alert_queue_limit,
+            max_age=overlay.alert_queue_max_age,
+        });
+    if (ready ~= nil) then activate_warning_payload(ready); end
+    if (warn.debug and (decision == 'suppressed' or decision == 'dropped')) then
+        print(chat.header(addon.name):append(chat.message('Alert burst protection: ' .. tostring(decision) ..
+            ' ' .. tostring(payload.rule_id or payload.name or 'warning'))));
+    end
+    -- Suppressed and capacity-dropped events are still handled. Returning true prevents
+    -- state rules from retrying the same burst every entity-scan frame.
+    return true;
+end
+
+local function trigger_context_rule(rule, fallbackName, messageOverride, context)
+    if (rule == nil or rule.verified ~= true or not is_rule_enabled(rule)) then return false; end
+
+    local text = build_context_text(rule, messageOverride, context);
+    if (text == nil) then return false; end
+
+    local effectiveSound, overridden = resolve_rule_sound(rule);
+    submit_warning_payload({
+        name=fallbackName or rule.ability or rule.actor or 'WARNING',
+        text=text, rule_id=rule.id, dedupe_key=rule.id,
+        sound=effectiveSound, sound_overridden=overridden, sound_policy='context',
+        duration=rule.duration, severity=tostring(rule.severity or 'important'):lower(),
+        prediction=tostring(rule.prediction or 'reactive'):lower(),
+    });
 
     if (warn.debug) then
         print(chat.header(addon.name):append(chat.message('Context rule: ' .. tostring(rule.id))));
@@ -1634,6 +1734,41 @@ local function update_debuff_mob_cache(force)
             end
         end
     end
+
+end
+
+local function entity_health_percent(entity, index)
+    if (index ~= nil) then
+        local manager = AshitaCore:GetMemoryManager():GetEntity();
+        if (manager ~= nil and type(manager.GetHPPercent) == 'function') then
+            local ok, value = pcall(function () return manager:GetHPPercent(index); end);
+            value = ok and tonumber(value) or nil;
+            if (value ~= nil and value >= 0 and value <= 100) then return value; end
+        end
+    end
+    if (entity == nil) then return nil; end
+    local fields = { 'HealthPercent', 'HPP', 'HPPercent' };
+    for _, field in ipairs(fields) do
+        local ok, value = pcall(function () return entity[field]; end);
+        value = ok and tonumber(value) or nil;
+        if (value ~= nil and value >= 0 and value <= 100) then return value; end
+    end
+    return nil;
+end
+
+local function get_current_zone_id()
+    local party = AshitaCore:GetMemoryManager():GetParty();
+    if (party == nil) then return nil; end
+    local ok, value = pcall(function () return party:GetMemberZone(0); end);
+    return ok and tonumber(value) or nil;
+end
+
+local function rule_matches_current_zone(rule)
+    if (type(rule) ~= 'table' or type(rule.zone_ids) ~= 'table' or #rule.zone_ids == 0) then return true; end
+    local zone = get_current_zone_id();
+    if (zone == nil) then return false; end
+    for _, id in ipairs(rule.zone_ids) do if (tonumber(id) == zone) then return true; end end
+    return false;
 end
 
 local function get_friendly_name_lookup()
@@ -1810,12 +1945,19 @@ local function debuff_instruction_is_assigned(definition)
     return false;
 end
 
+local MAX_PENDING_DEBUFF_EVENTS = 64;
+
 local function queue_debuff_prewarn(definition, entry)
     if (definition == nil or entry == nil) then return; end
+    local name = tostring(entry.name or 'Unknown');
+    for _, pending in ipairs(warn.debuffs.pending_prewarns) do
+        if (pending.status_id == definition.id and tostring(pending.name):lower() == name:lower()) then return; end
+    end
+    if (#warn.debuffs.pending_prewarns >= MAX_PENDING_DEBUFF_EVENTS) then return; end
     table.insert(warn.debuffs.pending_prewarns, {
         status_id = definition.id,
         definition = definition,
-        name = tostring(entry.name or 'Unknown'),
+        name = name,
         remaining = math.max(0, math.floor(((entry.expires_at or os.clock()) - os.clock()) + 0.5)),
         assigned = debuff_instruction_is_assigned(definition),
     });
@@ -1889,10 +2031,15 @@ local function debuff_mark_gained(definition, name)
 end
 
 local function queue_debuff_loss(definition, name, counter)
+    name = tostring(name);
+    for _, pending in ipairs(warn.debuffs.pending_losses) do
+        if (pending.status_id == definition.id and tostring(pending.name):lower() == name:lower()) then return; end
+    end
+    if (#warn.debuffs.pending_losses >= MAX_PENDING_DEBUFF_EVENTS) then return; end
     table.insert(warn.debuffs.pending_losses, {
         status_id = definition.id,
         definition = definition,
-        name = tostring(name),
+        name = name,
         counter = counter,
         assigned = debuff_instruction_is_assigned(definition),
     });
@@ -2228,17 +2375,13 @@ local function flush_debuff_prewarn_batch()
         if (#events > 4) then table.insert(lines, '...'); end
     end
 
-    warn.active.name = 'Debuff Timer';
-    warn.active.text = table.concat(lines, '\n');
-    warn.active.rule_id = '__global_debuff_prewarn__';
-    warn.active.sound = resolve_debuff_sound(events[1].definition);
-    warn.active.duration = tonumber(warn.settings.debuffs.alert_duration) or warn.settings.overlay.duration;
-    warn.active.severity = 'danger';
-    warn.active.prediction = 'readiness';
-    warn.active.startTime = os.clock();
-    warn.active.firing = true;
-
-    if (warn.settings.debuffs.sound_enabled) then play_sound_file(warn.active.sound); end
+    submit_warning_payload({
+        name='Debuff Timer', text=table.concat(lines, '\n'),
+        rule_id='__global_debuff_prewarn__', dedupe_key='__global_debuff_prewarn__',
+        sound=resolve_debuff_sound(events[1].definition), sound_policy='debuff',
+        duration=tonumber(warn.settings.debuffs.alert_duration) or warn.settings.overlay.duration,
+        severity='danger', prediction='readiness',
+    });
 end
 
 local function process_debuff_estimates()
@@ -2344,15 +2487,15 @@ local function resolve_critical_debuff_sound(definition)
 end
 
 local function start_critical_debuff_alert(text, definition)
-    warn.critical.text = tostring(text or 'CROWD CONTROL LOST!');
-    warn.critical.sound = resolve_critical_debuff_sound(definition);
-    warn.critical.duration = tonumber(warn.settings.debuffs.alert_duration) or 4.0;
-    warn.critical.startTime = os.clock();
-    warn.critical.firing = true;
-
-    if (warn.settings.debuffs.sound_enabled) then
-        play_sound_file(warn.critical.sound);
-    end
+    submit_warning_payload({
+        name=tostring((definition and definition.name) or 'CROWD CONTROL'),
+        text=tostring(text or 'CROWD CONTROL LOST!'),
+        rule_id='__critical_debuff__',
+        dedupe_key='__critical_debuff__|' .. tostring((definition and definition.id) or 'unknown'),
+        sound=resolve_critical_debuff_sound(definition), sound_policy='debuff',
+        duration=tonumber(warn.settings.debuffs.alert_duration) or 4.0,
+        severity='critical', prediction='reactive',
+    });
 end
 
 local function render_critical_debuff_alert()
@@ -2438,17 +2581,13 @@ local function flush_debuff_loss_batch()
     if (useCriticalCenter) then
         start_critical_debuff_alert(text, firstDef);
     else
-        warn.active.name = sameStatus and tostring(firstDef.name) or 'Debuffs';
-        warn.active.text = text;
-        warn.active.rule_id = '__global_debuff_loss__';
-        warn.active.sound = sound;
-        warn.active.duration = tonumber(warn.settings.debuffs.alert_duration) or warn.settings.overlay.duration;
-        warn.active.severity = 'danger';
-        warn.active.prediction = 'reactive';
-        warn.active.startTime = os.clock();
-        warn.active.firing = true;
-
-        if (warn.settings.debuffs.sound_enabled) then play_sound_file(sound); end
+        submit_warning_payload({
+            name=sameStatus and tostring(firstDef.name) or 'Debuffs', text=text,
+            rule_id='__global_debuff_loss__', dedupe_key='__global_debuff_loss__|' .. tostring(firstDef.id or 'mixed'),
+            sound=sound, sound_policy='debuff',
+            duration=tonumber(warn.settings.debuffs.alert_duration) or warn.settings.overlay.duration,
+            severity='danger', prediction='reactive',
+        });
     end
 end
 
@@ -2656,7 +2795,12 @@ local function schedule_verified_rule_timer(rule, now)
 end
 
 local function apply_verified_rule_mode(rule, now)
-    if (rule == nil or rule.mode == nil) then return nil; end
+    if (rule == nil) then return nil; end
+    if (rule.objective ~= nil and rule.objective.kind == 'ongo_fetter_proc') then
+        encounterRuntime.start_ongo_proc(warn.encounter, now);
+        return true;
+    end
+    if (rule.mode == nil) then return nil; end
     if (tostring(rule.encounter or '') == 'Aminon') then
         encounterRuntime.set_aminon_mode(warn.encounter, rule.mode.element, rule.mode.response, now);
         return true;
@@ -2699,6 +2843,21 @@ local function process_detected_action(actorName, abilityName, eventType, rawMes
         end
     end
 
+    if (warn.settings.context.encounter_detection and warn.activeEncounter.index ~= nil) then
+        local previousEncounterKey = warn.activeEncounter.state.active_key;
+        local transition = warn.activeEncounter.engine.observe_action(
+            warn.activeEncounter.index, warn.activeEncounter.state,
+            actorName, abilityName, eventType, get_current_zone_id(), now);
+        if (transition.kind == 'started' and previousEncounterKey ~= nil and
+            previousEncounterKey ~= warn.activeEncounter.state.active_key) then
+            warn.encounter = encounterRuntime.new_state();
+        end
+        if (warn.debug and (transition.kind == 'started' or transition.kind == 'ambiguous')) then
+            print(chat.header(addon.name):append(chat.message('Encounter detection: ' .. tostring(transition.kind) ..
+                ' from ' .. tostring(actorName) .. ' / ' .. tostring(abilityName))));
+        end
+    end
+
     record_timer_learning_event(actorName, abilityName, eventType);
     note_encounter_action(actorName, now);
 
@@ -2706,6 +2865,20 @@ local function process_detected_action(actorName, abilityName, eventType, rawMes
     -- Unknown observations remain local Learning evidence.
     local synthetic = rawMessage or (actorName .. ' ' .. eventType .. ' ' .. abilityName);
     local rule = find_context_ability_rule(eventType, abilityName, synthetic);
+    if (rule == nil and warn.activeEncounter.state.active_key ~= nil) then
+        local observation = warn.activeEncounter.engine.record_unknown(
+            warn.activeEncounter.state, actorName, abilityName, eventType, os.time());
+        local learningKey = warn.timerLearning.engine ~= nil and
+            warn.timerLearning.engine.make_key(actorName, abilityName) or nil;
+        local learningEntry = learningKey ~= nil and warn.timerLearning.entries[learningKey] or nil;
+        local profile = warn.activeEncounter.engine.get_profile(warn.activeEncounter.index, warn.activeEncounter.state);
+        if (observation ~= nil and learningEntry ~= nil and profile ~= nil) then
+            learningEntry.encounter_key = profile.key;
+            learningEntry.encounter = profile.encounter;
+            learningEntry.content = profile.content;
+            mark_learning_dirty(false);
+        end
+    end
     local modeChanged = nil;
     if (rule ~= nil and rule.verified == true) then
         schedule_verified_rule_timer(rule, now);
@@ -2742,6 +2915,30 @@ local function find_entity_name_by_server_id(serverId)
     return nil;
 end
 
+local function find_entity_position_by_server_id(serverId)
+    local entityManager = AshitaCore:GetMemoryManager():GetEntity();
+    if (entityManager == nil or serverId == nil) then return nil; end
+    local mapSize = entityManager:GetEntityMapSize();
+    for index = 0, mapSize - 1 do
+        if (tonumber(entityManager:GetServerId(index)) == tonumber(serverId)) then
+            local x, y, z = entity_position(entityManager:GetRawEntity(index));
+            if (x ~= nil) then return { x=x, y=y, z=z }; end
+            return nil;
+        end
+    end
+    return nil;
+end
+
+local function get_player_position()
+    local party = AshitaCore:GetMemoryManager():GetParty();
+    local entityManager = AshitaCore:GetMemoryManager():GetEntity();
+    if (party == nil or entityManager == nil) then return nil; end
+    local ok, index = pcall(function () return party:GetMemberTargetIndex(0); end);
+    if (not ok or index == nil) then return nil; end
+    local x, y, z = entity_position(entityManager:GetRawEntity(index));
+    return x ~= nil and { x=x, y=y, z=z } or nil;
+end
+
 local function build_entity_name_lookup()
     local result = {};
     local entityManager = AshitaCore:GetMemoryManager():GetEntity();
@@ -2763,7 +2960,7 @@ local function resolve_packet_action_name(actionType, actionId)
     local resources = AshitaCore:GetResourceManager();
     if (resources == nil or actionId == nil) then return nil; end
 
-    if (actionType == 8) then
+    if (actionType == 4 or actionType == 8) then
         local spell = resources:GetSpellById(actionId);
         if (spell ~= nil and spell.Name ~= nil) then return spell.Name[1]; end
         return nil;
@@ -2775,6 +2972,44 @@ local function resolve_packet_action_name(actionType, actionId)
         return nil;
     end
     return resources:GetString('monsters.abilities', actionId - 256);
+end
+
+
+local function resolve_spell_element(spellId)
+    local resources = AshitaCore:GetResourceManager();
+    if (resources == nil or spellId == nil) then return nil; end
+    local spell = resources:GetSpellById(spellId);
+    return spell ~= nil and spellElementNames[tonumber(spell.Element)] or nil;
+end
+
+local function observe_elemental_objective_results(parsed, resolvedTargets, now)
+    if (parsed.action_type ~= 4) then return; end
+    local spellId = tonumber(parsed.param17);
+    local spellName = resolve_packet_action_name(4, spellId);
+    local element = resolve_spell_element(spellId);
+    if (spellName == nil or element == nil) then return; end
+    warn.reactive.objective_evidence_serial = (warn.reactive.objective_evidence_serial or 0) + 1;
+    local serial = warn.reactive.objective_evidence_serial;
+
+    for targetIndex, target in ipairs(resolvedTargets or {}) do
+        local targetLower = tostring(target.name or ''):lower();
+        for actionIndex, action in ipairs(target.actions or {}) do
+            local damage = tonumber(action.param) or 0;
+            if (damage > 0 and targetLower == 'aminon' and warn.encounter.aminon.active) then
+                encounterRuntime.observe_aminon_element(warn.encounter, {
+                    key=string.format('%d:%d:%d', serial, targetIndex, actionIndex),
+                    type='elemental_hit', element=element, name=spellName, target=target.name,
+                }, now);
+            end
+            if (damage > 0 and targetLower == 'ongo' and warn.encounter.ongo.active and
+                magicBurstMessages[tonumber(action.message) or -1]) then
+                encounterRuntime.observe_ongo_burst(warn.encounter, {
+                    key=string.format('%d:%d:%d', serial, targetIndex, actionIndex),
+                    type='magic_burst', element=element, name=spellName, target=target.name,
+                }, now);
+            end
+        end
+    end
 end
 
 local function process_action_packet(event)
@@ -2819,6 +3054,11 @@ local function process_action_packet(event)
     end
     warn.reactive.last_target_count = #resolvedTargets;
 
+    if (parsed.action_type == 4) then
+        observe_elemental_objective_results(parsed, resolvedTargets, os.clock());
+        return;
+    end
+
     -- Completed monster TP moves carry every affected target. They do not create a
     -- duplicate ready alert, but they provide encounter triage and future status evidence.
     if (parsed.action_type == 11) then
@@ -2831,6 +3071,28 @@ local function process_action_packet(event)
             encounterRuntime.observe_shinryu_supernova_targets(warn.encounter, resolvedTargets, os.clock());
             warn.reactive.last_packet_action = tostring(actor) .. ' - ' .. tostring(completedAbility or 'Supernova') ..
                 string.format(' (%d targets)', #resolvedTargets);
+        end
+        if (actor ~= nil and tostring(actor):lower() == 'elemental circle') then
+            local now = os.clock();
+            encounterRuntime.observe_circle_pulse(warn.encounter, parsed.actor_id, now,
+                find_entity_position_by_server_id(parsed.actor_id));
+            local pulse = encounterRuntime.nearest_recent_circle_pulse(warn.encounter, get_player_position(), now, 6.0);
+            if (pulse ~= nil and pulse.distance <= 45 and
+                (now - (warn.encounter.circles.last_player_warning_at or 0)) >= 3.0) then
+                warn.encounter.circles.last_player_warning_at = now;
+                trigger_context_rule({ id='__divergence_circle_pulse', verified=true, severity='critical',
+                    prediction='reactive', sound='warning.wav', duration=3.0 }, 'ELEMENTAL CIRCLE',
+                    string.format('PULSE OBSERVED %.1f YALMS AWAY!\nMOVE OUT OR MITIGATE', pulse.distance));
+            end
+        end
+        if (actor ~= nil and completedAbility ~= nil and tostring(completedAbility) ~= '') then
+            local targetName = resolvedTargets[1] ~= nil and resolvedTargets[1].name or nil;
+            local targetNames = {};
+            for _, target in ipairs(resolvedTargets) do table.insert(targetNames, target.name); end
+            process_detected_action(actor, completedAbility, 'uses', nil, 'packet', {
+                target_name=targetName, target_id=parsed.target_id,
+                target_names=targetNames, targets=resolvedTargets,
+            });
         end
         return;
     end
@@ -3162,7 +3424,10 @@ local function process_maintained_debuff_messages(rawMessage)
     local now = os.clock();
 
     for _, rule in ipairs(warn.rules.state_rules or {}) do
-        if (rule.type == 'debuff_maintenance' and is_rule_enabled(rule)) then
+        local detectorEnabled = warn.settings.context.encounter_detection == true and warn.activeEncounter.index ~= nil;
+        local encounterMatches = not detectorEnabled or
+            (warn.activeEncounter.state.active_key ~= nil and rule.__encounter_key == warn.activeEncounter.state.active_key);
+        if (encounterMatches and rule.type == 'debuff_maintenance' and is_rule_enabled(rule)) then
             local state = warn.ruleState[rule.id];
             -- Encounter messages such as Breadwinner's scratchy-throat messages do not
             -- include the actor name, so only consume them while the configured actor is present.
@@ -3197,7 +3462,10 @@ local function process_maintained_debuff_messages(rawMessage)
 end
 
 local function update_state_rules()
-    if (not warn.settings.context.enabled or not warn.settings.context.state_triggers) then return; end
+    if (not warn.settings.context.enabled) then return; end
+    local stateRulesEnabled = warn.settings.context.state_triggers == true;
+    local detectorEnabled = warn.settings.context.encounter_detection == true and warn.activeEncounter.index ~= nil;
+    if (not stateRulesEnabled and not detectorEnabled) then return; end
 
     local now = os.clock();
     if (now < warn.entityScan.next_scan) then return; end
@@ -3206,29 +3474,56 @@ local function update_state_rules()
     -- configured state-rule actors exist, fall back to a slow 1-second idle scan so
     -- Warn does not continuously walk the full entity table while the player is elsewhere.
     local wanted = {};
-    for _, rule in ipairs(warn.rules.state_rules or {}) do
-        if (is_rule_enabled(rule) and rule.actor ~= nil) then wanted[rule.actor] = true; end
+    if (stateRulesEnabled) then
+        for _, rule in ipairs(warn.rules.state_rules or {}) do
+            if (is_rule_enabled(rule) and rule_matches_current_zone(rule) and rule.actor ~= nil) then wanted[rule.actor] = true; end
+        end
+    end
+    local detectorWanted = {};
+    if (detectorEnabled) then
+        for actor in pairs(warn.activeEncounter.index.actor_index or {}) do detectorWanted[actor] = true; end
     end
 
     local found = {};
+    local encounterActors = {};
     local entityManager = AshitaCore:GetMemoryManager():GetEntity();
     if (entityManager ~= nil) then
         local mapSize = entityManager:GetEntityMapSize();
         for i = 0, mapSize - 1 do
             local entity = entityManager:GetRawEntity(i);
-            if (entity ~= nil and entity.Name ~= nil and wanted[entity.Name]) then
-                found[entity.Name] = { index = i, entity = entity };
+            if (entity ~= nil and entity.Name ~= nil) then
+                local entityName = tostring(entity.Name);
+                if (wanted[entityName]) then found[entityName] = { index = i, entity = entity }; end
+                if (detectorWanted[entityName:lower()]) then
+                    local hostile = entity.SpawnFlags ~= nil and bit.band(entity.SpawnFlags, 0x10) ~= 0;
+                    local hpp = entity_health_percent(entity, i);
+                    if (hostile and (hpp == nil or hpp > 0)) then encounterActors[entityName] = true; end
+                end
             end
         end
     end
     warn.entityScan.entities = found;
 
-    local anyFound = next(found) ~= nil;
+    local anyFound = next(found) ~= nil or next(encounterActors) ~= nil;
     warn.entityScan.next_scan = now + (anyFound and warn.entityScan.active_interval or warn.entityScan.idle_interval);
 
+    if (detectorEnabled) then
+        local transition = warn.activeEncounter.engine.observe_entities(
+            warn.activeEncounter.index, warn.activeEncounter.state, encounterActors,
+            get_current_zone_id(), now, warn.settings.context.encounter_dismiss_seconds);
+        if (transition.kind == 'ended') then
+            warn.encounter = encounterRuntime.new_state();
+        elseif (warn.debug and (transition.kind == 'started' or transition.kind == 'ambiguous')) then
+            print(chat.header(addon.name):append(chat.message('Encounter detection: ' .. tostring(transition.kind) .. ' from nearby entities.')));
+        end
+    end
+
+    if (not stateRulesEnabled) then return; end
     for _, rule in ipairs(warn.rules.state_rules or {}) do
         local state = warn.ruleState[rule.id];
-        if (is_rule_enabled(rule) and state ~= nil and rule.actor ~= nil) then
+        local encounterMatches = not detectorEnabled or
+            (warn.activeEncounter.state.active_key ~= nil and rule.__encounter_key == warn.activeEncounter.state.active_key);
+        if (encounterMatches and is_rule_enabled(rule) and rule_matches_current_zone(rule) and state ~= nil and rule.actor ~= nil) then
             local foundEntry = found[rule.actor];
             local entity = foundEntry ~= nil and foundEntry.entity or nil;
 
@@ -3243,6 +3538,7 @@ local function update_state_rules()
                 state.stationary_since = nil;
                 state.status_active = nil;
                 state.last_status_change = 0;
+                state.last_hpp = nil;
             else
                 state.index = foundEntry.index;
 
@@ -3267,6 +3563,17 @@ local function update_state_rules()
                             state.last_trigger = now;
                         end
                     end
+                elseif (rule.type == 'entity_hp_threshold') then
+                    state.present = true;
+                    local hpp = entity_health_percent(entity, foundEntry.index);
+                    local threshold = tonumber(rule.threshold) or 50;
+                    if (hpp ~= nil and not state.triggered and hpp <= threshold) then
+                        if (trigger_context_rule(rule, rule.actor, nil, { target_name=rule.actor })) then
+                            state.triggered = true;
+                            state.last_trigger = now;
+                        end
+                    end
+                    if (hpp ~= nil) then state.last_hpp = hpp; end
                 elseif (rule.type == 'entity_movement') then
                     local x, y, z = entity_position(entity);
                     if (x ~= nil) then
@@ -3372,12 +3679,14 @@ local function update_divergence_circle_state()
 end
 
 local function get_catalog_counts()
-    local counts = { total = 0, ambu1 = 0, ambu2 = 0, htmb = 0, omen = 0, geas = 0, sortie = 0, odyssey = 0, dynamis = 0, divergence = 0, sinister = 0, skirmish = 0, unity = 0, vagary = 0 };
+    local counts = { total = 0, ambu1 = 0, ambu2 = 0, htmb = 0, missions = 0, abyssea = 0, omen = 0, geas = 0, sortie = 0, odyssey = 0, dynamis = 0, divergence = 0, sinister = 0, skirmish = 0, unity = 0, vagary = 0 };
     for _, entry in ipairs(warn.rules.catalog or {}) do
         counts.total = counts.total + 1;
         if (entry.content == 'Ambuscade' and entry.group == 'Volume 1') then counts.ambu1 = counts.ambu1 + 1; end
         if (entry.content == 'Ambuscade' and entry.group == 'Volume 2') then counts.ambu2 = counts.ambu2 + 1; end
         if (entry.content == 'High-Tier Mission Battlefields') then counts.htmb = counts.htmb + 1; end
+        if (entry.content == 'Missions & BCNMs') then counts.missions = counts.missions + 1; end
+        if (entry.content == 'Abyssea') then counts.abyssea = counts.abyssea + 1; end
         if (entry.content == 'Omen') then counts.omen = counts.omen + 1; end
         if (entry.content == 'Geas Fete') then counts.geas = counts.geas + 1; end
         if (entry.content == 'Sortie') then counts.sortie = counts.sortie + 1; end
@@ -3403,7 +3712,8 @@ local function print_coverage_summary()
     local c = get_catalog_counts();
     print(chat.header(addon.name):append(chat.message(string.format('Coverage: Ambuscade V1 %d / V2 %d, HTMB %d, Omen %d, Geas %d, Sortie %d, Odyssey %d.', c.ambu1, c.ambu2, c.htmb, c.omen, c.geas, c.sortie, c.odyssey))));
     print(chat.header(addon.name):append(chat.message(string.format('Coverage: Dynamis %d, Divergence %d, Sinister Reign %d.', c.dynamis, c.divergence, c.sinister))));
-    print(chat.header(addon.name):append(chat.message(string.format('Coverage: Skirmish %d, Unity Wanted %d, Vagary %d (%d total indexed encounters).', c.skirmish, c.unity, c.vagary, c.total))));
+    print(chat.header(addon.name):append(chat.message(string.format('Coverage: Abyssea %d, Missions/BCNMs %d, Skirmish %d, Unity Wanted %d, Vagary %d.', c.abyssea, c.missions, c.skirmish, c.unity, c.vagary))));
+    print(chat.header(addon.name):append(chat.message(string.format('Total indexed encounters: %d.', c.total))));
     print(chat.header(addon.name):append(chat.message(string.format('Currently actionable: %d ability/spell rules + %d encounter-state rules.', #(warn.rules.ability_rules or {}), #(warn.rules.state_rules or {})))));
 end
 
@@ -3484,7 +3794,7 @@ function get_sound_files()
     -- If directory enumeration is unavailable for any reason, preserve the bundled
     -- files as a safe fallback when they actually exist.
     if (#files == 0) then
-        local fallback = { 'beep.wav', 'alert.wav', 'warning.wav', 'alarm.wav' };
+        local fallback = { 'msg.wav', 'beep.wav', 'alert.wav', 'warning.wav', 'alarm.wav', 'Fly you fools!.wav', 'Kefka.wav', 'Run away.wav' };
         for _, name in ipairs(fallback) do
             local f = io.open(addon.path .. '\\sounds\\' .. name, 'rb');
             if (f ~= nil) then
@@ -3590,19 +3900,11 @@ function trigger_warning(abilityName)
         return;
     end
 
-    warn.active.name = matched;
-    warn.active.text = nil;
-    warn.active.rule_id = nil;
-    warn.active.sound = nil;
-    warn.active.duration = nil;
-    warn.active.severity = 'important';
-    warn.active.prediction = 'reactive';
-    warn.active.startTime = os.clock();
-    warn.active.firing = true;
-
-    if (warn.settings.sound.enabled) then
-        play_selected_sound();
-    end
+    submit_warning_payload({
+        name=matched, text=nil, rule_id=nil, dedupe_key='manual|' .. matched:lower(),
+        sound=nil, sound_policy='global', duration=nil,
+        severity='important', prediction='reactive',
+    });
 end
 
 --------------------------------------------------------------------------------------------------
@@ -3767,6 +4069,31 @@ local function draw_ornate_warning_frame(draw, x, y, width, height, scale, activ
     return brass, brass_dim, accent;
 end
 
+local function resolve_warning_card_position(display, width, height, overlay)
+    local margin = math.max(18, math.min(display.x, display.y) * 0.025);
+    local x = tonumber(overlay.position_x) or math.floor((display.x - width) / 2);
+    local y = tonumber(overlay.position_y) or math.floor(display.y * 0.24);
+    local anchor = tostring(overlay.position_anchor or 'custom');
+
+    if (anchor == 'top_left' or anchor == 'middle_left' or anchor == 'bottom_left') then x = margin; end
+    if (anchor == 'top_center' or anchor == 'center' or anchor == 'bottom_center' or anchor == 'center_x') then
+        x = (display.x - width) / 2;
+    end
+    if (anchor == 'top_right' or anchor == 'middle_right' or anchor == 'bottom_right') then
+        x = display.x - width - margin;
+    end
+    if (anchor == 'top_left' or anchor == 'top_center' or anchor == 'top_right') then y = margin; end
+    if (anchor == 'middle_left' or anchor == 'center' or anchor == 'middle_right' or anchor == 'center_y') then
+        y = (display.y - height) / 2;
+    end
+    if (anchor == 'bottom_left' or anchor == 'bottom_center' or anchor == 'bottom_right') then
+        y = display.y - height - margin;
+    end
+
+    return math.floor(math.max(0, math.min(display.x - width, x))),
+        math.floor(math.max(0, math.min(display.y - height, y)));
+end
+
 local function render_warning_card(state, is_critical, previewing)
     ensure_ui_settings();
     if (warn.ui.theme == nil) then reload_ui_theme(); end
@@ -3808,12 +4135,7 @@ local function render_warning_card(state, is_critical, previewing)
     for _ in (detail .. '\n'):gmatch('(.-)\n') do detail_lines = detail_lines + 1; end
     if (detail == '') then detail_lines = 0; end
     local height = (detail_lines > 0 and (136 + math.max(0, detail_lines - 1) * 18) or 106) * scale;
-    local x = tonumber(warn.settings.overlay.position_x) or math.floor((display.x - width) / 2);
-    local y = tonumber(warn.settings.overlay.position_y) or math.floor(display.y * 0.24);
-    if (severity == 'critical') then
-        x = math.floor((display.x - width) / 2);
-        y = math.floor(display.y * 0.27);
-    end
+    local x, y = resolve_warning_card_position(display, width, height, warn.settings.overlay);
     y = y + slide;
 
     local flags = bit.bor(ImGuiWindowFlags_NoDecoration, ImGuiWindowFlags_NoResize,
@@ -3851,6 +4173,7 @@ local function render_warning_card(state, is_critical, previewing)
                 local mouse_x, mouse_y = imgui.GetMousePos();
                 if (imgui.IsMouseDragging(0, 3) and warn.ui.warning_preview_drag_mouse_x ~= nil and
                     warn.ui.warning_preview_drag_mouse_y ~= nil) then
+                    warn.settings.overlay.position_anchor = 'custom';
                     warn.settings.overlay.position_x = math.floor(math.max(0, math.min(display.x - width,
                         x + mouse_x - warn.ui.warning_preview_drag_mouse_x)));
                     warn.settings.overlay.position_y = math.floor(math.max(0, math.min(display.y - height,
@@ -3910,6 +4233,11 @@ function render_overlay()
         end
     end
 
+    if (not warn.critical.firing and not warn.active.firing and warn.settings.overlay.burst_protection == true) then
+        local nextAlert = warn.alertGuard.engine.next(warn.alertGuard.state, os.clock());
+        if (nextAlert ~= nil) then activate_warning_payload(nextAlert); end
+    end
+
     if (warn.critical.firing) then
         render_warning_card(warn.critical, true, false);
     elseif (warn.active.firing) then
@@ -3932,15 +4260,56 @@ local function render_encounter_hud()
     local now = os.clock();
     local timerRows = encounterRuntime.timer_rows(warn.encounter, now);
     local showAminon = warn.encounter.aminon.active;
+    local showOngo = warn.encounter.ongo ~= nil and warn.encounter.ongo.active;
     local showBumba = warn.encounter.bumba.active;
     local showCircles = warn.encounter.circles.active;
+    local circlePulse = showCircles and encounterRuntime.nearest_recent_circle_pulse(
+        warn.encounter, get_player_position(), now, 6.0) or nil;
     local doomRows, doomRemaining, doomPending = encounterRuntime.shinryu_doom_rows(warn.encounter, now);
     local showShinryu = warn.encounter.shinryu ~= nil and warn.encounter.shinryu.active;
-    if (#timerRows == 0 and not showAminon and not showBumba and not showCircles and not showShinryu) then return; end
+    local activeProfile = warn.activeEncounter.engine.get_profile(warn.activeEncounter.index, warn.activeEncounter.state);
+    local hudCache = warn.ui.encounter_hud_cache;
+    local activeKey = activeProfile ~= nil and activeProfile.key or nil;
+    if (hudCache.key ~= activeKey or now >= (hudCache.next_refresh or 0)) then
+        local activeRules = {};
+        local activeCounters, seenCounters = {}, {};
+        if (activeProfile ~= nil) then
+        for _, rule in ipairs(activeProfile.rules or {}) do
+            if (rule.verified == true and is_rule_enabled(rule)) then table.insert(activeRules, rule); end
+        end
+        local ranks = { critical=1, danger=2, important=3 };
+        table.sort(activeRules, function(a, b)
+            local ar = ranks[tostring(a.severity or 'important'):lower()] or 4;
+            local br = ranks[tostring(b.severity or 'important'):lower()] or 4;
+            if (ar ~= br) then return ar < br; end
+            return tostring(a.ability or a.actor or a.id) < tostring(b.ability or b.actor or b.id);
+        end);
+        while (#activeRules > 3) do table.remove(activeRules); end
+        for _, rule in ipairs(activeProfile.rules or {}) do
+            local counter = get_available_counter(rule);
+            if (counter ~= nil) then
+                local label = tostring(counter.label or counter.name or 'Available response'):gsub('[!\r\n]+$', '');
+                if (not seenCounters[label:lower()]) then
+                    seenCounters[label:lower()] = true;
+                    table.insert(activeCounters, label);
+                    if (#activeCounters >= 2) then break end
+                end
+            end
+        end
+        end
+        hudCache.key = activeKey;
+        hudCache.rules = activeRules;
+        hudCache.counters = activeCounters;
+        hudCache.next_refresh = now + 0.50;
+    end
+    local activeRules = hudCache.rules or {};
+    local activeCounters = hudCache.counters or {};
+    if (#timerRows == 0 and activeProfile == nil and not showAminon and not showOngo and not showBumba and not showCircles and not showShinryu) then return; end
 
     local shinryuLines = showShinryu and (2 + math.min(#doomRows, 6) + ((doomPending or doomRemaining ~= nil) and 1 or 0)) or 0;
-    local lineCount = #timerRows + (showAminon and 2 or 0) + (showBumba and 1 or 0) +
-        (showCircles and 1 or 0) + shinryuLines;
+    local activeLines = activeProfile ~= nil and (2 + #activeRules + #activeCounters) or 0;
+    local lineCount = activeLines + #timerRows + (showAminon and 2 or 0) + (showOngo and 2 or 0) + (showBumba and 1 or 0) +
+        (showCircles and (circlePulse ~= nil and 2 or 1) or 0) + shinryuLines;
     local width = 390 * get_ui_scale();
     local height = (46 + lineCount * 21) * get_ui_scale();
     local ui = warn.settings.ui;
@@ -3953,8 +4322,24 @@ local function render_encounter_hud()
     imgui.PushStyleColor(ImGuiCol_WindowBg, { 0.018, 0.045, 0.11, tonumber(ui.encounter_hud_opacity) or 0.86 });
     imgui.PushStyleColor(ImGuiCol_Border, { 0.78, 0.60, 0.28, 0.95 });
     if (imgui.Begin('##warn_tactical_hud', true, flags)) then
-        imgui.TextColored({ 0.96, 0.78, 0.32, 1.0 }, 'WARN  /  LIVE TACTICAL STATE');
+        imgui.TextColored({ 0.96, 0.78, 0.32, 1.0 }, 'WARN  /  CURRENT ENCOUNTER');
         imgui.Separator();
+        if (activeProfile ~= nil) then
+            local state = warn.activeEncounter.state;
+            local badge = state.manual and 'MANUAL' or (state.confidence == 'confirmed' and 'CONFIRMED' or 'NEARBY');
+            imgui.TextColored({ 0.96, 0.78, 0.32, 1.0 }, activeProfile.encounter:upper() .. '  [' .. badge .. ']');
+            imgui.TextColored({ 0.66, 0.74, 0.86, 1.0 }, activeProfile.content .. ' / ' .. activeProfile.group);
+            for _, rule in ipairs(activeRules) do
+                local severity = tostring(rule.severity or 'important'):lower();
+                local color = severity == 'critical' and { 1.0, 0.35, 0.30, 1.0 } or
+                    (severity == 'danger' and { 1.0, 0.72, 0.25, 1.0 } or { 0.55, 0.82, 1.0, 1.0 });
+                imgui.TextColored(color, severity:upper() .. '  ' .. tostring(rule.ability or rule.actor or rule.id));
+            end
+            for _, counter in ipairs(activeCounters) do
+                imgui.TextColored({ 0.55, 1.0, 0.60, 1.0 }, 'READY  ' .. counter);
+            end
+            if (showBumba or showAminon or showOngo or showCircles or showShinryu or #timerRows > 0) then imgui.Separator(); end
+        end
         if (showBumba) then
             local element = tostring(warn.encounter.bumba.element or 'unknown'):upper();
             if (element == 'UNKNOWN') then
@@ -3965,10 +4350,20 @@ local function render_encounter_hud()
         end
         if (showAminon) then
             local dt, age = encounterRuntime.aminon_dt_estimate(warn.encounter, now);
+            local objective = warn.encounter.objectives.aminon;
             imgui.TextColored({ 0.72, 0.88, 1.0, 1.0 }, string.format('AMINON  %s MODE - USE %s',
                 tostring(warn.encounter.aminon.mode):upper(), tostring(warn.encounter.aminon.response):upper()));
-            local status = warn.encounter.aminon.proc_confirmed and 'PROC CONFIRMED' or string.format('Mode age %s / possible +%d%% DT', format_seconds(age), dt);
+            local status = warn.encounter.aminon.proc_confirmed and 'PROC CONFIRMED  5/5' or
+                string.format('Elemental hits %d/5  |  Age %s / possible +%d%% DT', objective.progress or 0, format_seconds(age), dt);
             imgui.TextColored(warn.encounter.aminon.proc_confirmed and { 0.55, 1.0, 0.60, 1.0 } or { 1.0, 0.72, 0.25, 1.0 }, status);
+        end
+        if (showOngo) then
+            local objective = warn.encounter.objectives.ongo;
+            imgui.TextColored({ 1.0, 0.50, 0.28, 1.0 }, 'ONGO  FETTERS + SHOCK ~150 HP/TICK');
+            local status = warn.encounter.ongo.proc_confirmed and 'BLUE PROC CONFIRMED' or
+                string.format('EARTH MAGIC BURSTS  %d/%d%s', objective.progress or 0, objective.required or 2,
+                    objective.status == 'awaiting_confirmation' and '  - VERIFY BLUE PROC' or '');
+            imgui.TextColored(warn.encounter.ongo.proc_confirmed and { 0.55, 1.0, 0.60, 1.0 } or { 1.0, 0.72, 0.25, 1.0 }, status);
         end
         if (showCircles) then
             local circles = warn.encounter.circles;
@@ -3977,6 +4372,11 @@ local function render_encounter_hud()
                     circles.cleared or 0, encounterRuntime.circle_damage_reduction(warn.encounter) or 0));
             else
                 imgui.TextColored({ 0.72, 0.78, 0.86, 1.0 }, string.format('DIVERGENCE  %d Circles observed - full count uncertain', circles.alive or 0));
+            end
+            if (circlePulse ~= nil) then
+                local color = circlePulse.distance <= 45 and { 1.0, 0.35, 0.30, 1.0 } or { 1.0, 0.72, 0.25, 1.0 };
+                imgui.TextColored(color, string.format('RECENT PULSE  %.1f yalms - %s', circlePulse.distance,
+                    circlePulse.distance <= 45 and 'MOVE / MITIGATE' or 'OUTSIDE DOCUMENTED 45Y RADIUS'));
             end
         end
         if (showShinryu) then
@@ -4109,6 +4509,20 @@ function render_appearance_tab()
     local s = warn.settings.overlay;
     local ui = warn.settings.ui;
 
+    local function apply_warning_anchor(anchor)
+        local display = imgui.GetIO().DisplaySize;
+        local previewScale = get_ui_scale() * math.max(0.70, math.min(1.40, tonumber(s.card_scale) or 1.0)) * 0.86;
+        local previewWidth = math.min(display.x * 0.58, math.max(380 * previewScale, 560 * previewScale));
+        local previewHeight = 136 * previewScale;
+        local currentX, currentY = resolve_warning_card_position(display, previewWidth, previewHeight, s);
+        s.position_x = currentX;
+        s.position_y = currentY;
+        s.position_anchor = anchor;
+        s.position_x, s.position_y = resolve_warning_card_position(display, previewWidth, previewHeight, s);
+        warn.ui.warning_preview_visible = true;
+        save_settings();
+    end
+
     imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Vana\'diel Tactical Interface');
     imgui.TextColored({ 0.70, 0.78, 0.88, 1.0 },
         'Warn keeps alert readability separate from decorative effects so neither has to obstruct the fight.');
@@ -4178,13 +4592,7 @@ function render_appearance_tab()
     end
     imgui.SameLine();
     if (imgui.Button('Reset Warning Position')) then
-        local display = imgui.GetIO().DisplaySize;
-        local preview_scale = get_ui_scale() * math.max(0.70, math.min(1.40, tonumber(s.card_scale) or 1.0)) * 0.86;
-        local preview_width = math.min(display.x * 0.58, math.max(380 * preview_scale, 560 * preview_scale));
-        s.position_x = math.floor((display.x - preview_width) / 2);
-        s.position_y = math.floor(display.y * 0.24);
-        warn.ui.warning_preview_visible = true;
-        save_settings();
+        apply_warning_anchor('top_center');
     end
     imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 },
         'The preview is temporary and closes automatically when you leave Appearance or close Warn.');
@@ -4225,10 +4633,35 @@ function render_appearance_tab()
     end
 
     imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Warning Position');
-    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 }, 'Show and drag the temporary preview, or enter an exact position below. Critical alerts remain upper-center.');
+    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 },
+        'Choose a screen-aware preset to work around other addons. Dragging or exact coordinates switch back to Custom.');
+
+    if (imgui.Button('Top Left##warn_anchor_tl')) then apply_warning_anchor('top_left'); end
+    imgui.SameLine();
+    if (imgui.Button('Top Center##warn_anchor_tc')) then apply_warning_anchor('top_center'); end
+    imgui.SameLine();
+    if (imgui.Button('Top Right##warn_anchor_tr')) then apply_warning_anchor('top_right'); end
+
+    if (imgui.Button('Middle Left##warn_anchor_ml')) then apply_warning_anchor('middle_left'); end
+    imgui.SameLine();
+    if (imgui.Button('Screen Center##warn_anchor_c')) then apply_warning_anchor('center'); end
+    imgui.SameLine();
+    if (imgui.Button('Middle Right##warn_anchor_mr')) then apply_warning_anchor('middle_right'); end
+
+    if (imgui.Button('Bottom Left##warn_anchor_bl')) then apply_warning_anchor('bottom_left'); end
+    imgui.SameLine();
+    if (imgui.Button('Bottom Center##warn_anchor_bc')) then apply_warning_anchor('bottom_center'); end
+    imgui.SameLine();
+    if (imgui.Button('Bottom Right##warn_anchor_br')) then apply_warning_anchor('bottom_right'); end
+
+    if (imgui.Button('Center Horizontally##warn_anchor_x')) then apply_warning_anchor('center_x'); end
+    imgui.SameLine();
+    if (imgui.Button('Center Vertically##warn_anchor_y')) then apply_warning_anchor('center_y'); end
+    imgui.TextColored({ 0.72, 0.80, 0.90, 1.0 }, 'Current layout: ' .. tostring(s.position_anchor or 'custom'):gsub('_', ' '));
 
     local pos = { math.floor(s.position_x), math.floor(s.position_y) };
     if (imgui.InputInt2('X / Y##warn_position', pos)) then
+        s.position_anchor = 'custom';
         s.position_x = pos[1];
         s.position_y = pos[2];
         warn.font.position_x = pos[1];
@@ -4308,6 +4741,46 @@ local function get_rule_group(rule)
     return 'General';
 end
 
+local encounterSeverityRank = { critical=1, danger=2, important=3 };
+
+local function get_active_profile_rules(limit)
+    local rows = {};
+    for _, rule in ipairs(warn.activeEncounter.engine.rules_for_active(
+        warn.activeEncounter.index, warn.activeEncounter.state)) do
+        if (rule.verified == true and is_rule_enabled(rule)) then table.insert(rows, rule); end
+    end
+    table.sort(rows, function(a, b)
+        local ar = encounterSeverityRank[tostring(a.severity or 'important'):lower()] or 4;
+        local br = encounterSeverityRank[tostring(b.severity or 'important'):lower()] or 4;
+        if (ar ~= br) then return ar < br; end
+        return tostring(a.ability or a.actor or a.id):lower() < tostring(b.ability or b.actor or b.id):lower();
+    end);
+    if (limit ~= nil) then while (#rows > limit) do table.remove(rows); end end
+    return rows;
+end
+
+local function first_message_line(rule)
+    local message = tostring(rule.message or rule.loss_message or rule.ability or rule.actor or 'Verified mechanic');
+    return message:match('([^\r\n]+)') or message;
+end
+
+local function get_active_counter_labels(limit)
+    local labels, seen = {}, {};
+    for _, rule in ipairs(get_active_profile_rules()) do
+        local counter = get_available_counter(rule);
+        if (counter ~= nil) then
+            local label = tostring(counter.label or counter.name or 'Available response'):gsub('[!\r\n]+$', '');
+            local key = label:lower();
+            if (not seen[key]) then
+                seen[key] = true;
+                table.insert(labels, label);
+                if (#labels >= (tonumber(limit) or 3)) then break end
+            end
+        end
+    end
+    return labels;
+end
+
 local function get_encounter_categories()
     return encounterBrowser.build_categories(warn.rules.catalog or {}, get_all_context_rules(), get_rule_group);
 end
@@ -4316,6 +4789,110 @@ local function text_colored_wrapped(color, value)
     imgui.PushStyleColor(ImGuiCol_Text, color);
     imgui.TextWrapped(tostring(value or ''));
     imgui.PopStyleColor();
+end
+
+local function render_current_encounter_panel()
+    local state = warn.activeEncounter.state;
+    local profile = warn.activeEncounter.engine.get_profile(warn.activeEncounter.index, state);
+    local manualOpen = warn.manualEncounterOpen[1] == true;
+    local profileRuleCount = profile ~= nil and #get_active_profile_rules(4) or 0;
+    local profileCounterCount = profile ~= nil and #get_active_counter_labels(3) or 0;
+    local profileHeight = 170 + (profileRuleCount * 22) + (profileCounterCount > 0 and 22 or 0);
+    local panelHeight = profile ~= nil and profileHeight or 145;
+    if (#(state.candidates or {}) > 0 and profile == nil) then panelHeight = 190; end
+    if (manualOpen) then panelHeight = panelHeight + 155; end
+
+    imgui.BeginChild('warn_current_encounter', { 0, panelHeight }, ImGuiChildFlags_Borders);
+    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Current Encounter');
+    imgui.SameLine();
+    if (imgui.Checkbox('Auto Detect##warn_encounter_auto', { warn.settings.context.encounter_detection })) then
+        warn.settings.context.encounter_detection = not warn.settings.context.encounter_detection;
+        if (not warn.settings.context.encounter_detection and not state.manual) then
+            warn.activeEncounter.engine.clear(state, 'automatic detection disabled', os.clock());
+            warn.encounter = encounterRuntime.new_state();
+        end
+        save_settings();
+    end
+
+    if (profile ~= nil) then
+        local confidence = state.manual and 'MANUAL' or
+            (state.confidence == 'confirmed' and 'AUTO / CONFIRMED' or 'AUTO / NEARBY');
+        imgui.TextColored({ 0.96, 0.78, 0.32, 1.0 }, profile.encounter);
+        imgui.SameLine();
+        imgui.TextColored(state.confidence == 'confirmed' and { 0.55, 1.0, 0.60, 1.0 } or { 0.72, 0.82, 0.94, 1.0 }, confidence);
+        text_colored_wrapped({ 0.66, 0.74, 0.86, 1.0 }, profile.content .. ' / ' .. profile.group ..
+            (state.actor ~= nil and ('   Evidence: ' .. tostring(state.actor)) or ''));
+
+        local rules = get_active_profile_rules(4);
+        if (#rules == 0) then
+            imgui.TextColored({ 0.72, 0.72, 0.72, 1.0 }, 'Indexed only - no verified automatic alerts.');
+        else
+            for _, rule in ipairs(rules) do
+                local severity = tostring(rule.severity or 'important'):lower();
+                local color = severity == 'critical' and { 1.0, 0.38, 0.32, 1.0 } or
+                    (severity == 'danger' and { 1.0, 0.72, 0.25, 1.0 } or { 0.55, 0.82, 1.0, 1.0 });
+                imgui.TextColored(color, '[' .. severity:upper() .. '] ' .. tostring(rule.ability or rule.actor or rule.id));
+                imgui.SameLine();
+                imgui.TextColored({ 0.78, 0.82, 0.88, 1.0 }, ' - ' .. first_message_line(rule));
+            end
+        end
+
+        local counters = get_active_counter_labels(3);
+        if (#counters > 0) then
+            imgui.TextColored({ 0.58, 0.92, 0.66, 1.0 }, 'Your available responses: ' .. table.concat(counters, '  /  '));
+        end
+        if (imgui.Button('Focus in Browser##warn_encounter_focus')) then
+            warn.encounterContent = profile.content;
+            warn.encounterGroup = profile.group;
+            local rulesForProfile = get_active_profile_rules(1);
+            warn.selectedRuleId = rulesForProfile[1] ~= nil and rulesForProfile[1].id or nil;
+        end
+        imgui.SameLine();
+        if (imgui.Button('Clear##warn_encounter_clear')) then
+            warn.activeEncounter.engine.clear(state, 'user cleared', os.clock());
+            warn.encounter = encounterRuntime.new_state();
+        end
+    elseif (#(state.candidates or {}) > 0) then
+        imgui.TextColored({ 1.0, 0.72, 0.25, 1.0 }, 'Multiple verified encounters match the current evidence.');
+        text_colored_wrapped({ 0.66, 0.74, 0.86, 1.0 }, 'Warn will not guess. Choose the encounter manually or wait for a unique action.');
+        for index = 1, math.min(#state.candidates, 4) do
+            local candidate = warn.activeEncounter.index.profiles[state.candidates[index]];
+            if (candidate ~= nil and imgui.Button(candidate.encounter .. '##warn_candidate_' .. index)) then
+                warn.activeEncounter.engine.activate_manual(warn.activeEncounter.index, state, candidate.key, os.clock());
+                warn.encounter = encounterRuntime.new_state();
+            end
+            if (index < math.min(#state.candidates, 4)) then imgui.SameLine(); end
+        end
+    else
+        imgui.TextColored({ 0.72, 0.82, 0.94, 1.0 }, 'No active encounter detected.');
+        text_colored_wrapped({ 0.62, 0.68, 0.76, 1.0 },
+            'Warn activates from a verified boss entity or action. Unknown abilities continue into Learning without producing alerts.');
+    end
+
+    if (imgui.Button((manualOpen and 'Hide Manual Selection' or 'Choose Manually') .. '##warn_manual_toggle')) then
+        warn.manualEncounterOpen[1] = not manualOpen;
+        manualOpen = not manualOpen;
+    end
+    if (manualOpen) then
+        imgui.SameLine();
+        if (type(imgui.PushItemWidth) == 'function') then imgui.PushItemWidth(-1); end
+        imgui.InputText('##warn_manual_encounter_search', warn.manualEncounterSearch, 255);
+        if (type(imgui.PopItemWidth) == 'function') then imgui.PopItemWidth(); end
+        imgui.BeginChild('warn_manual_encounter_results', { 0, 125 }, ImGuiChildFlags_Borders);
+        local term = warn.manualEncounterSearch[1] or '';
+        for _, candidate in ipairs(warn.activeEncounter.engine.search(warn.activeEncounter.index, term, 15)) do
+            local verifiedCount = #(candidate.rules or {});
+            local label = string.format('%s  /  %s  /  %s  [%d verified]',
+                candidate.content, candidate.group, candidate.encounter, verifiedCount);
+            if (imgui.Selectable(label .. '##warn_manual_' .. candidate.key, state.active_key == candidate.key)) then
+                warn.activeEncounter.engine.activate_manual(warn.activeEncounter.index, state, candidate.key, os.clock());
+                warn.encounter = encounterRuntime.new_state();
+                warn.manualEncounterOpen[1] = false;
+            end
+        end
+        imgui.EndChild();
+    end
+    imgui.EndChild();
 end
 
 local function get_available_content_width(default_width)
@@ -4383,14 +4960,43 @@ end
 local function render_live_encounter_tools()
     local content = warn.encounterContent;
     local showBumba = content == 'Odyssey' or warn.encounter.bumba.active;
+    local showOngo = content == 'Odyssey' or (warn.encounter.ongo ~= nil and warn.encounter.ongo.active);
     local showAminon = content == 'Sortie' or warn.encounter.aminon.active;
     local showCircles = content == 'Dynamis - Divergence' or warn.encounter.circles.active;
     local now = os.clock();
 
     imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Live Encounter Tools');
-    if (not showBumba and not showAminon and not showCircles) then
+    if (not showBumba and not showOngo and not showAminon and not showCircles) then
         text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
             'Select Odyssey, Sortie, or Dynamis - Divergence to prepare its live tactical panel.');
+    end
+
+    if (showOngo) then
+        imgui.Separator();
+        imgui.TextColored({ 0.72, 0.88, 1.0, 1.0 }, 'Ongo - Fetter Proc Objective');
+        if (warn.encounter.ongo.active) then
+            local objective = warn.encounter.objectives.ongo;
+            imgui.Text(string.format('Cycle %d   |   Earth Magic Bursts %d / %d',
+                warn.encounter.ongo.cycle or 1, objective.progress or 0, objective.required or 2));
+            if (objective.status == 'awaiting_confirmation') then
+                imgui.TextColored({ 1.0, 0.72, 0.25, 1.0 }, 'Expected burst count reached - verify the blue proc before clearing the hazard.');
+            elseif (warn.encounter.ongo.proc_confirmed) then
+                imgui.TextColored({ 0.55, 1.0, 0.60, 1.0 }, 'Blue proc confirmed - fetter / Shock objective complete.');
+            else
+                imgui.TextColored({ 1.0, 0.45, 0.30, 1.0 }, 'Fetters active; Shock is approximately 150 HP per tick.');
+            end
+            if (imgui.Button('Confirm Blue Proc##warn_ongo_proc')) then encounterRuntime.mark_ongo_proc(warn.encounter, now); end
+            imgui.SameLine();
+            if (imgui.Button('Clear Ongo State##warn_ongo_clear')) then
+                local fresh = encounterRuntime.new_state();
+                warn.encounter.ongo = fresh.ongo;
+                warn.encounter.objectives.ongo = fresh.objectives.ongo;
+            end
+        else
+            imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 }, 'Waiting for Ongo to use Crashing Thunder.');
+        end
+        text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
+            'Earth Magic Bursts are counted from completed action packets. Warn still asks for blue-proc confirmation so a burst count is never mistaken for proof that the fetters cleared.');
     end
 
     if (showBumba) then
@@ -4460,8 +5066,10 @@ local function render_live_encounter_tools()
         imgui.TextColored({ 0.72, 0.88, 1.0, 1.0 }, 'Aminon - Elemental Response');
         if (warn.encounter.aminon.active) then
             local dt, age = encounterRuntime.aminon_dt_estimate(warn.encounter, now);
-            imgui.Text(string.format('Mode: %s   Response: %s   Age: %s',
-                tostring(warn.encounter.aminon.mode):upper(), tostring(warn.encounter.aminon.response):upper(), format_seconds(age)));
+            local objective = warn.encounter.objectives.aminon;
+            imgui.Text(string.format('Mode: %s   Response: %s   Hits: %d / 5   Age: %s',
+                tostring(warn.encounter.aminon.mode):upper(), tostring(warn.encounter.aminon.response):upper(),
+                objective.progress or 0, format_seconds(age)));
             if (warn.encounter.aminon.proc_confirmed) then
                 imgui.TextColored({ 0.55, 1.0, 0.60, 1.0 }, 'Proc confirmed manually - current-mode DT growth stopped.');
             else
@@ -4474,7 +5082,7 @@ local function render_live_encounter_tools()
             imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 }, 'Waiting for an Aminon elemental TP move.');
         end
         text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
-            'Warn does not claim five-hit proc progress yet; completion evidence is not exposed reliably enough by the current parser.');
+            'Completed spell packets track the five consecutive matching elemental hits. A damaging wrong-element spell resets the displayed sequence.');
     end
 
     if (showCircles) then
@@ -4490,8 +5098,13 @@ local function render_live_encounter_tools()
         else
             imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 }, 'Waiting for Wave 3 Elemental Circles.');
         end
+        local pulse = encounterRuntime.nearest_recent_circle_pulse(warn.encounter, get_player_position(), now, 6.0);
+        if (pulse ~= nil) then
+            imgui.TextColored(pulse.distance <= 45 and { 1.0, 0.35, 0.30, 1.0 } or { 1.0, 0.72, 0.25, 1.0 },
+                string.format('Recent observed pulse: %.1f yalms away.', pulse.distance));
+        end
         text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
-            'Element identities remain unresolved because every object is named Elemental Circle. Warn will not invent an elemental assignment.');
+            'Proximity appears only after Warn observes an actual Circle pulse. Element identities remain unresolved because every object shares the same name.');
     end
 
     local timerRows = encounterRuntime.timer_rows(warn.encounter, now);
@@ -4514,6 +5127,8 @@ function render_context_tab()
     imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Encounter Intelligence');
     text_colored_wrapped({ 0.70, 0.78, 0.88, 1.0 },
         'Browse verified mechanics. Unknown observations enter Learning and never alert unless you explicitly Custom Watch them.');
+    render_current_encounter_panel();
+    imgui.Separator();
     imgui.TextColored({ 0.72, 0.78, 0.86, 1.0 }, 'Search encounter alerts');
     if (type(imgui.PushItemWidth) == 'function') then imgui.PushItemWidth(-1); end
     imgui.InputText('##warn_encounter_search', warn.ruleSearch, 255);
@@ -4910,6 +5525,24 @@ function render_timer_learning_tab()
     imgui.TextColored({ 0.70, 0.78, 0.88, 1.0 },
         'Unknown abilities never alert automatically. Accepted observations remain uncertain readiness windows, not countdowns.');
 
+    local unknownOrder = warn.activeEncounter.state.unknown_order or {};
+    if (#unknownOrder > 0) then
+        imgui.Separator();
+        imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Recent Unverified Encounter Observations');
+        imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 },
+            'Session-only diagnostics linked to the active encounter. They remain non-actionable until curated and verified.');
+        imgui.BeginChild('warn_learning_encounter_unknown', { 0, 95 }, ImGuiChildFlags_Borders);
+        local first = math.max(1, #unknownOrder - 7);
+        for index = #unknownOrder, first, -1 do
+            local entry = warn.activeEncounter.state.unknown[unknownOrder[index]];
+            if (entry ~= nil) then
+                imgui.Text(string.format('%s - %s   [%d observation%s]', entry.actor, entry.ability,
+                    entry.count or 1, (entry.count or 1) == 1 and '' or 's'));
+            end
+        end
+        imgui.EndChild();
+    end
+
     local minimumUses = { tonumber(cfg.minimum_uses) or 3 };
     if (imgui.SliderFloat('Uses Before Suggesting##warn_learning_uses', minimumUses, 3.0, 6.0, '%.0f')) then
         cfg.minimum_uses = math.floor(minimumUses[1] + 0.5);
@@ -4941,6 +5574,10 @@ function render_timer_learning_tab()
                 (tonumber(entry.confidence) or 0) * 100,
                 format_seconds(entry.minimum or entry.interval or 0),
                 format_seconds(entry.maximum or entry.interval or 0)));
+            if (entry.encounter ~= nil) then
+                imgui.TextColored({ 0.62, 0.72, 0.84, 1.0 },
+                    'Observed during: ' .. tostring(entry.content or 'Encounter') .. ' / ' .. tostring(entry.encounter));
+            end
             if (imgui.Button('Accept Readiness Window##warn_learning_approve_' .. key)) then
                 set_learning_status(key, entry, 'approved');
             end
@@ -4988,6 +5625,10 @@ function render_timer_learning_tab()
             imgui.Text(string.format('Observed range: %s to %s   |   %s',
                 format_seconds(entry.minimum or entry.approved_interval or entry.interval or 0),
                 format_seconds(entry.maximum or entry.approved_interval or entry.interval or 0), timingText));
+            if (entry.encounter ~= nil) then
+                imgui.TextColored({ 0.62, 0.72, 0.84, 1.0 },
+                    'Encounter context: ' .. tostring(entry.content or 'Encounter') .. ' / ' .. tostring(entry.encounter));
+            end
             if (imgui.Button('Return to Review##warn_learning_review_' .. key)) then
                 set_learning_status(key, entry, 'suggested');
             end
@@ -5302,7 +5943,8 @@ local function render_alert_options()
         { key = 'enabled', label = 'Enable Verified Encounter Alerts', help = 'Only verified database rules create contextual alerts.' },
         { key = 'job_counters', label = 'Show Assigned Action Instructions', help = 'Requires both an enabled role or assignment and a capability Ashita confirms is usable.' },
         { key = 'packet_recognition', label = 'Use Passive Packet Recognition', help = 'Reads incoming actions for faster reaction; never modifies, blocks or injects packets.' },
-        { key = 'encounter_hud', label = 'Show Compact Live Tactical HUD', help = 'Appears only while supported encounter modes, timers, or objectives are active.' },
+        { key = 'encounter_detection', label = 'Detect the Active Encounter Automatically', help = 'Uses only verified boss names and actions. Ambiguous evidence is never guessed.' },
+        { key = 'encounter_hud', label = 'Show Compact Live Tactical HUD', help = 'Shows the current verified encounter, relevant mechanics, available role actions, timers and objectives.' },
         { key = 'encounter_diagnostics', label = 'Capture Bumba Packet Diagnostics', help = 'Keeps the 12 most recent unique Bumba action signatures in memory for retail verification; nothing is uploaded.' },
         { key = 'state_triggers', label = 'Enable Encounter State Triggers', help = 'Allows verified movement, presence and maintained-state mechanics.' },
         { key = 'contextual_sounds', label = 'Use Contextual / Per-Alert Sounds', help = 'When disabled, every encounter alert uses the global sound.' },
@@ -5311,9 +5953,23 @@ local function render_alert_options()
         local enabled = cfg[control.key] == true;
         if (imgui.Checkbox(control.label .. '##alert_' .. control.key, { enabled })) then
             cfg[control.key] = not enabled;
+            if (control.key == 'encounter_detection' and cfg[control.key] ~= true and not warn.activeEncounter.state.manual) then
+                warn.activeEncounter.engine.clear(warn.activeEncounter.state, 'automatic detection disabled', os.clock());
+                warn.encounter = encounterRuntime.new_state();
+            end
             save_settings();
         end
         imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 }, control.help);
+    end
+
+    if (cfg.encounter_detection) then
+        local dismiss = { tonumber(cfg.encounter_dismiss_seconds) or 12 };
+        if (imgui.SliderFloat('Encounter End Grace##warn_encounter_grace', dismiss, 5.0, 30.0, '%.0f sec')) then
+            cfg.encounter_dismiss_seconds = math.floor(dismiss[1] + 0.5);
+            save_settings();
+        end
+        imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 },
+            'Prevents a brief unload, draw-in or entity-table gap from ending the encounter card too early.');
     end
 
     if (cfg.packet_recognition) then
@@ -5327,6 +5983,37 @@ local function render_alert_options()
         end
         imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 },
             'Auto detects the common legacy target-count header used by SimpleLog and DSP-based servers.');
+    end
+
+    imgui.Separator();
+    imgui.TextColored({ 0.72, 0.80, 0.90, 1.0 }, 'Notification Burst Protection');
+    local overlay = warn.settings.overlay;
+    if (imgui.Checkbox('Protect Against AoE Alert Bursts##warn_burst_protection', { overlay.burst_protection })) then
+        overlay.burst_protection = not overlay.burst_protection;
+        if (not overlay.burst_protection) then warn.alertGuard.engine.clear(warn.alertGuard.state); end
+        save_settings();
+    end
+    imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 },
+        'Rapid duplicates share one card and one sound. Only a small priority queue is retained; stale alerts expire automatically.');
+    if (overlay.burst_protection) then
+        local repeatWindow = { tonumber(overlay.repeat_suppression) or 1.25 };
+        if (imgui.SliderFloat('Repeat Suppression##warn_repeat_window', repeatWindow, 0.50, 3.00, '%.2f sec')) then
+            overlay.repeat_suppression = repeatWindow[1];
+            save_settings();
+        end
+        local queueLimit = { tonumber(overlay.alert_queue_limit) or 4 };
+        if (imgui.SliderFloat('Maximum Queued Alerts##warn_queue_limit', queueLimit, 1.0, 8.0, '%.0f')) then
+            overlay.alert_queue_limit = math.floor(queueLimit[1] + 0.5);
+            warn.alertGuard.engine.clear(warn.alertGuard.state);
+            save_settings();
+        end
+        imgui.TextColored({ 0.58, 0.62, 0.68, 1.0 }, string.format(
+            'Queued now: %d   Suppressed this session: %d   Capacity drops: %d   Critical preemptions: %d',
+            #(warn.alertGuard.state.queue or {}), warn.alertGuard.state.suppressed or 0,
+            warn.alertGuard.state.dropped or 0, warn.alertGuard.state.preempted or 0));
+        if (#(warn.alertGuard.state.queue or {}) > 0 and imgui.Button('Clear Pending Alerts##warn_clear_alert_queue')) then
+            warn.alertGuard.state.queue = {};
+        end
     end
 
     imgui.Separator();
@@ -6075,23 +6762,11 @@ ashita.events.register('command', 'command_cb', function (e)
 
         local testName = table.concat(args, ' ', 3);
         local entry = find_ability_entry(testName);
-        if (entry ~= nil) then
-            warn.active.name = entry[1];
-        else
-            warn.active.name = testName;
-        end
-        warn.active.text = nil;
-        warn.active.rule_id = nil;
-        warn.active.sound = nil;
-        warn.active.duration = nil;
-        warn.active.severity = 'important';
-        warn.active.prediction = 'reactive';
-        warn.active.startTime = os.clock();
-        warn.active.firing = true;
-
-        if (warn.settings.sound.enabled) then
-            play_selected_sound();
-        end
+        local displayName = entry ~= nil and entry[1] or testName;
+        submit_warning_payload({
+            name=displayName, dedupe_key='test|' .. displayName:lower(),
+            sound_policy='global', severity='important', prediction='reactive',
+        });
         return;
     end
 
@@ -6195,6 +6870,10 @@ ashita.events.register('packet_in', 'packet_in_cb', function (e)
         warn.reactive.last_target_count = 0;
         warn.reactive.last_status_observation = '';
         warn.encounter = encounterRuntime.new_state();
+        warn.activeEncounter.state = warn.activeEncounter.engine.new_state();
+        warn.alertGuard.engine.clear(warn.alertGuard.state);
+        warn.active.firing = false;
+        warn.critical.firing = false;
     end
 end);
 

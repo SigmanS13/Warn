@@ -5,6 +5,31 @@ local function eq(actual, expected, label)
 end
 
 local state = runtime.new_state();
+
+runtime.set_aminon_mode(state, 'fire', 'water', 0);
+eq(state.objectives.aminon.required, 5, 'Aminon objective requires five hits');
+for index = 1, 5 do
+    runtime.observe_aminon_element(state, {
+        key='aminon_' .. index, type='elemental_hit', element='water', target='Aminon',
+    }, index);
+end
+eq(state.aminon.proc_confirmed, true, 'Aminon fifth matching elemental hit confirms proc');
+eq(state.objectives.aminon.status, 'complete', 'Aminon objective completes');
+
+runtime.start_ongo_proc(state, 20);
+eq(state.objectives.ongo.required, 2, 'Ongo first cycle requires two bursts');
+runtime.observe_ongo_burst(state, { key='ongo_1', type='magic_burst', element='earth' }, 21);
+runtime.observe_ongo_burst(state, { key='ongo_2', type='magic_burst', element='earth' }, 22);
+eq(state.objectives.ongo.status, 'awaiting_confirmation', 'Ongo burst threshold awaits blue proc');
+runtime.mark_ongo_proc(state, 23);
+eq(state.ongo.shock_active, false, 'Ongo confirmed proc clears Shock state');
+runtime.start_ongo_proc(state, 30);
+eq(state.objectives.ongo.required, 3, 'Ongo later cycle requires three bursts');
+
+runtime.observe_circle_pulse(state, 77, 40, { x=10, y=0, z=0 });
+local pulse = runtime.nearest_recent_circle_pulse(state, { x=0, y=0, z=0 }, 42, 6);
+eq(math.floor(pulse.distance), 10, 'Circle pulse exposes live distance');
+eq(runtime.nearest_recent_circle_pulse(state, { x=0, y=0, z=0 }, 47, 6), nil, 'Circle pulse expires');
 runtime.schedule_timer(state, { id='bane', label='Bane', interval=240, prewarn=15 }, 100);
 eq(#runtime.update_timers(state, 324), 0, 'timer quiet before prewarn');
 local events = runtime.update_timers(state, 326);

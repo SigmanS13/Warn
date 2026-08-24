@@ -35,6 +35,7 @@ assert_equal(rules.odyssey_mimic_hell_trap.severity, 'critical', 'Hell Trap seve
 assert_equal(rules.odyssey_ngai_marine_mayhem.target_shape, 'radial', 'Marine Mayhem shape');
 assert_equal(rules.odyssey_kalunga_batholithic_shell.counter.responsibility, 'support', 'Kalunga Dispel role filter');
 assert_equal(rules.odyssey_ongo_crashing_thunder.event, 'uses', 'Ongo proc window event');
+assert_equal(rules.odyssey_ongo_crashing_thunder.objective.kind, 'ongo_fetter_proc', 'Ongo reusable objective metadata');
 assert_equal(rules.odyssey_bumba_dispelga.event, 'starts_casting', 'Bumba Dispelga cast warning');
 
 print('odyssey_spec: all checks passed');

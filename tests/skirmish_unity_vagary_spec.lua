@@ -8,9 +8,9 @@ local function assert_equal(actual, expected, label)
     end
 end
 
-assert_equal(#(skirmish.encounters or {}), 21, 'Skirmish encounter index');
-assert_equal(#(skirmish.ability_rules or {}), 6, 'Skirmish action rules');
-assert_equal(#(skirmish.state_rules or {}), 2, 'Skirmish state rules');
+assert_equal(#(skirmish.encounters or {}), 22, 'Skirmish encounter index');
+assert_equal(#(skirmish.ability_rules or {}), 20, 'Skirmish action rules');
+assert_equal(#(skirmish.state_rules or {}), 4, 'Skirmish state rules');
 assert_equal(#(unity.encounters or {}), 56, 'Unity Wanted complete roster');
 assert_equal(#(unity.ability_rules or {}), 29, 'Unity Wanted action rules');
 assert_equal(#(unity.state_rules or {}), 1, 'Unity Wanted state rules');
@@ -33,6 +33,11 @@ for _, module in ipairs({ skirmish, unity, vagary }) do
 end
 
 assert_equal(seen.skirmish_aatxe_awful_eye.target_shape, 'gaze', 'Aatxe gaze warning');
+assert_equal(seen.alluvion_kroni_unrelenting_brand.severity, 'critical', 'Kroni ability reset severity');
+assert_equal(seen.alluvion_guayota_danse_macabre.target_shape, 'single', 'Guayota charm shape');
+assert_equal(seen.alluvion_tecciztecatl_venom_shell.responsibility, 'cleanse', 'Tecciztecatl cleanse responsibility');
+assert_equal(seen.alluvion_leraje_meteor.counter.name, 'Stun', 'Leraje Meteor counter');
+assert_equal(seen.alluvion_living_cairn.type, 'entity_present', 'Alluvion floor-complete guidance');
 assert_equal(seen.unity_shedu_fulmination.severity, 'critical', 'Shedu Fulmination severity');
 assert_equal(seen.unity_bambrox_goblin_mines.type, 'entity_present', 'Bambrox mine detection');
 assert_equal(seen.vagary_perfidien_flaming_kick.message, 'FIRE MODE ACTIVE!\nUSE WATER DAMAGE', 'Perfidien fire response');

@@ -1,4 +1,4 @@
-# Warn encounter database coverage — v2.10.0
+# Warn encounter database coverage — v3.0.0
 
 This file tracks **index coverage** separately from **verified actionable-rule coverage**. An encounter being indexed means Warn knows it belongs in the research set; it does **not** imply every mechanic has been verified yet.
 
@@ -7,6 +7,8 @@ This file tracks **index coverage** separately from **verified actionable-rule c
 - Ambuscade Volume 1: **24/24 historical encounter families indexed**
 - Ambuscade Volume 2: **67/67 historical encounter families indexed**
 - High-Tier Mission Battlefields: **30/30 BG-Wiki HTMB categories indexed**
+- Missions & BCNMs: **42 milestone and classic battlefields indexed** across nation missions, expansion stories, add-on scenarios, and orb battles
+- Abyssea: **39 major NMs indexed** across all nine zones, including every zone boss and the six primary Caturae
 - Omen: **9/9 boss encounters indexed** — three Glassy mid-bosses and six Caturae bosses
 - Geas Fete: **85/85 Aeonic-route encounters indexed** — 25 Escha - Zi'Tah, 32 Escha - Ru'Aun, and 28 Reisenjima
 - Sortie: **17/17 named NMs and bosses indexed** — eight sector NMs, eight A-H bosses, and Aminon
@@ -14,26 +16,35 @@ This file tracks **index coverage** separately from **verified actionable-rule c
 - Dynamis: **26 progression bosses indexed** across the ten classic zones
 - Dynamis - Divergence: **13 entries indexed** — all twelve Wave 1-3 bosses plus Aurix
 - Sinister Reign: **9/9 encounter variants indexed** across its three waves
-- Skirmish: **21 original/Alluvion objectives and NMs indexed**
+- Skirmish: **22 original/Alluvion objectives and NMs indexed**
 - Unity Wanted: **56/56 Wanted NMs indexed**
 - Vagary: **5/5 mega bosses indexed**
 
-## Verified actionable coverage in v2.10
+## Verified actionable coverage in v3.0
 
 - Ambuscade Volume 1: **24 encounter families** have one or more contextual rules/state alerts.
 - Ambuscade Volume 2: **54 encounter families** now have one or more contextual rules/state alerts.
 - HTMB: **30 of 30 categories** have direct encounter rules or inherited actor rules. **Divine Might** benefits from the individual Ark Angel actor rules, because Warn matches those bosses by actor name regardless of which Ark Angel battlefield they appear in.
+- Missions & BCNMs: **5 encounters** have new direct coverage comprising 5 action rules and 1 state warning. Existing actor-based HTMB rules also recognize shared original mission bosses at runtime without a duplicate second alert.
+- Abyssea: **11 of 39 indexed encounters** have direct verified coverage, comprising 26 action alerts for the most consequential major-boss mechanics.
 - Omen: **9 of 9 indexed bosses** have direct verified rules, now comprising 28 alerts after adding Ou's 65% Chainspell event.
-- Geas Fete: **16 of 85 indexed encounters** have direct verified rules, comprising 34 alerts for Warder of Courage, Reisenjima HELMs, Zi'Tah HELMs, and Ru'Aun gods.
+- Geas Fete: **16 of 85 indexed encounters** have direct verified rules, comprising 34 action alerts plus 2 Kirin/Kouryu transition-state warnings for Warder of Courage, Reisenjima HELMs, Zi'Tah HELMs, and Ru'Aun gods.
 - Sortie: **9 of 17 indexed encounters** have direct verified coverage, comprising 44 action alerts and 2 encounter-state warnings for every major boss.
 - Odyssey: **8 of 68 indexed entries** have direct verified coverage, comprising 24 alerts for the shared Mimic hazard and all seven Atonement 3-4 bosses.
 - Dynamis: **12 of 26 indexed bosses** inherit or have direct coverage, comprising 11 rules for the highest-impact classic and Arch-boss mechanics.
 - Dynamis - Divergence: **8 of 13 indexed entries** have direct coverage, comprising 5 action alerts and 4 Wave 3 preparation warnings.
 - Sinister Reign: **8 of 9 indexed encounters** have direct coverage, comprising 18 alerts. Wave 1 Arciela and Ygnas remains indexed-only pending a sufficiently actionable mechanic.
-- Skirmish: **6 action alerts and 2 encounter-state warnings** cover Rala hazards, all four documented Cirdas Mistmaws, and Yorcia Stronghold defense.
+- Skirmish: **20 action alerts and 4 encounter-state warnings** cover Rala hazards, all eight Rala/Cirdas Mistmaws, Balamor, floor progression, and Yorcia Stronghold defense.
 - Unity Wanted: **29 action alerts and 1 encounter-state warning** cover high-impact mechanics across the upper Wanted tiers and Tumult Curator.
 - Vagary: **5 of 5 mega bosses** have direct verified coverage, comprising 28 action alerts and 1 encounter-state warning.
-- Database total: **445 ability/spell rules + 24 encounter-state rules**, across **430 indexed encounter entries**.
+- Database total: **490 ability/spell rules + 29 encounter-state rules**, across **512 indexed encounter entries**.
+
+### Abyssea, missions, and Alluvion additions
+
+- All nine Abyssea zone bosses plus frequently farmed Empyrean NMs and Caturae are indexed.
+- Verified Abyssea calls cover Briareus, Glavoid, Kukulkan, Itzpapalotl, Cirein-croin, Sedna, Bennu, Rani, Resheph, Amphitrite, and Raja.
+- Mission coverage adds Ancient Vows, Darkness Named, Flames for the Dead, original Alexander, and Up in Arms while retaining shared actor-rule recognition for existing mission bosses.
+- Alluvion adds Mistmaw Kroni, Guayota, Tecciztecatl, and Leraje; Balamor's Adumbration; and observable Windrender/Living Cairn objective guidance.
 
 ### Major Volume 2 additions
 
@@ -109,4 +120,4 @@ Do not turn uncertain advice into a confident alert. If a source establishes tha
 3. Research Sortie's eight minor sector NMs and hidden-objective messages separately from the completed major-boss pass.
 4. Expand Geas Fete from the 8 highest-priority actionable encounters toward the complete 85-entry index, prioritizing mechanics with reliable sources and clear player responses.
 5. Add BLU-set-spell capability checks (Sudden Lunge, Blank Gaze, etc.) before surfacing BLU-specific counter prompts.
-6. Continue refining indexed-only Skirmish and lower-tier Unity NMs when specific retail mechanics have sufficiently reliable documentation.
+6. Continue the indexed-only Abyssea and classic BCNM research queues only when specific retail mechanics have sufficiently reliable documentation and a useful observable response.

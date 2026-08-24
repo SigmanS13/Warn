@@ -10,6 +10,8 @@ Warn's encounter knowledge is intentionally kept outside `warn.lua` so the datab
 - `ambuscade_v2.lua` — historical Volume 2 rules
 - `ambuscade_v2_history.lua` — additional verified historical Volume 2 profiles
 - `high_tier_battlefields.lua` — HTMB rules
+- `missions_bcnms.lua` — original story encounters and classic orb battlefields
+- `abyssea.lua` — major Abyssea NM index and verified high-impact mechanics
 - `omen.lua` — Omen Glassy mid-boss and Caturae boss rules
 - `sortie.lua` — complete Sortie NM/boss index and verified major-boss mechanics
 - `odyssey.lua` — complete named Sheol/Gaol NM index and verified high-impact Gaol rules
@@ -24,6 +26,12 @@ Warn's encounter knowledge is intentionally kept outside `warn.lua` so the datab
 
 `../rules.lua` loads these modules and merges their `ability_rules`, `state_rules`, and catalog entries.
 
+Warn 3.0 builds a runtime profile index from this same curated data through
+`../active_encounter.lua`. Only verified rules contribute automatic actor/action evidence.
+Catalog-only entries remain available for manual selection but never become automatic alerts.
+If an actor or ability could refer to more than one profile, the runtime must resolve it through
+the current profile or request a manual choice; it must not select the first database row.
+
 Verified scripted timers can be attached to an ability rule without turning learned repetition into
 a hard countdown:
 
@@ -36,6 +44,11 @@ timer = {
 
 Use timer metadata only for a documented fixed interval. Runtime state and certainty handling live
 in `../encounter_runtime.lua`; learned observations remain uncertain readiness windows.
+
+Reusable live objectives are evidence-gated in `../objective_runtime.lua`. Encounter rules should
+start them through small declarative adapters instead of implementing a new progress counter for
+each boss. For example, Ongo uses `objective={kind='ongo_fetter_proc'}`; completed packet evidence
+advances progress, while a separately observed or manual blue-proc confirmation completes it.
 
 The `0x028` runtime now retains every packet target and every per-target action result. Rules may
 continue using `{target}` for the primary target; encounter-specific runtimes can consume the full
@@ -88,6 +101,10 @@ can actually use it now. Blue Magic counters also require the spell to be curren
 Critical factual messages remain visible even when the action label is filtered.
 
 ## State rules
+
+State rules may be scoped to exact client zone IDs with `zone_ids={...}`. HP transitions use
+`type='entity_hp_threshold'` plus `threshold=<percent>` and the read-only Ashita entity HP getter.
+Always include a presence/action fallback when the HP sample may arrive after the transition.
 
 State rules cover mechanics that are useful **before** an ability is readied, or aren't represented by a TP move at all. Current types include entity-presence, entity-movement, and maintained-debuff alerts.
 

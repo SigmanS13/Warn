@@ -2,6 +2,8 @@ local module_files = {
     'data/rules/catalog.lua',
     'data/rules/generic.lua',
     'data/rules/high_tier_battlefields.lua',
+    'data/rules/missions_bcnms.lua',
+    'data/rules/abyssea.lua',
     'data/rules/omen.lua',
     'data/rules/sortie.lua',
     'data/rules/odyssey.lua',
@@ -37,8 +39,8 @@ for _, file in ipairs(module_files) do
     catalog_count = catalog_count + #(module.encounters or {});
 end
 
-if ability_count < 440 then error('unexpectedly low ability rule count'); end
-if state_count < 24 then error('unexpectedly low state rule count'); end
-if catalog_count < 430 then error('unexpectedly low encounter catalog count'); end
+if ability_count < 490 then error('unexpectedly low ability rule count'); end
+if state_count < 29 then error('unexpectedly low state rule count'); end
+if catalog_count < 510 then error('unexpectedly low encounter catalog count'); end
 
 print(string.format('rule_database_spec: %d ability rules, %d state rules, %d catalog entries; all IDs unique', ability_count, state_count, catalog_count));
