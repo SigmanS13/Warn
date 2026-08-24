@@ -34,6 +34,11 @@ function runtime.new_state()
         aminon = { active=false, mode=nil, response=nil, started_at=nil, proc_confirmed=false, proc_at=nil },
         bumba = { active=false, element='unknown', element_started_at=nil, vengeance='v25', engaged_at=nil },
         circles = { active=false, alive=0, max_seen=0, reliable=false, cleared=nil, last_seen_at=nil },
+        shinryu = {
+            active=false, wings='unknown', wings_observed_at=nil, next_shift_at=nil, wings_evidence=nil,
+            doom={ active=false, pending=false, readied_at=nil, started_at=nil, expires_at=nil,
+                visible_until=nil, targets={} },
+        },
         diagnostics = { bumba_packets={}, last_signature=nil },
     };
 end
@@ -167,6 +172,100 @@ function runtime.record_bumba_packet(state, signature, details)
     table.insert(state.diagnostics.bumba_packets, 1, details);
     while #state.diagnostics.bumba_packets > 12 do table.remove(state.diagnostics.bumba_packets); end
     return true;
+end
+
+function runtime.set_shinryu_wings(state, wings, now, evidence)
+    if (state == nil or state.shinryu == nil) then return false; end
+    wings = tostring(wings or 'unknown'):lower();
+    if (wings ~= 'spread' and wings ~= 'down') then wings = 'unknown'; end
+    now = tonumber(now) or 0;
+    local changed = state.shinryu.wings ~= wings;
+    state.shinryu.active = true;
+    state.shinryu.wings = wings;
+    state.shinryu.wings_observed_at = now;
+    -- Meteor/Comet proves the current stance but not the exact moment the model
+    -- changed. A hard countdown would therefore be false precision until a
+    -- dedicated transition packet signature is verified.
+    state.shinryu.next_shift_at = evidence == 'verified-transition' and (now + 180) or nil;
+    state.shinryu.wings_evidence = evidence;
+    return changed;
+end
+
+function runtime.prepare_shinryu_supernova(state, now)
+    if (state == nil or state.shinryu == nil) then return nil; end
+    local doom = state.shinryu.doom;
+    state.shinryu.active = true;
+    doom.active = true;
+    doom.pending = true;
+    doom.readied_at = tonumber(now) or 0;
+    doom.started_at = nil;
+    doom.expires_at = nil;
+    doom.visible_until = doom.readied_at + 15;
+    doom.targets = {};
+    return doom;
+end
+
+local function target_key(id, name)
+    local numeric = tonumber(id) or 0;
+    if (numeric ~= 0) then return tostring(numeric); end
+    return tostring(name or 'unknown'):lower();
+end
+
+function runtime.observe_shinryu_supernova_targets(state, targets, now)
+    if (state == nil or state.shinryu == nil) then return nil; end
+    local doom = state.shinryu.doom;
+    now = tonumber(now) or 0;
+    state.shinryu.active = true;
+    if (not doom.active) then runtime.prepare_shinryu_supernova(state, now); doom = state.shinryu.doom; end
+    doom.pending = false;
+    doom.started_at = now;
+    doom.expires_at = now + 10;
+    doom.visible_until = now + 15;
+
+    for _, target in ipairs(targets or {}) do
+        local key = target_key(target.id, target.name);
+        doom.targets[key] = {
+            id=tonumber(target.id) or 0,
+            name=tostring(target.name or ('Target ' .. key)),
+            status='exposed',
+            observed_at=now,
+            message=target.message,
+            reaction=target.reaction,
+        };
+    end
+    return doom;
+end
+
+function runtime.observe_shinryu_doom(state, targetId, targetName, active, now)
+    if (state == nil or state.shinryu == nil or not state.shinryu.doom.active) then return false; end
+    local doom = state.shinryu.doom;
+    local key = target_key(targetId, targetName);
+    local target = doom.targets[key];
+    if (target == nil) then
+        target = { id=tonumber(targetId) or 0, name=tostring(targetName or ('Target ' .. key)), observed_at=tonumber(now) or 0 };
+        doom.targets[key] = target;
+    elseif (targetName ~= nil and tostring(targetName) ~= '') then
+        target.name = tostring(targetName);
+    end
+    target.status = active and 'doomed' or 'cleared';
+    target.status_observed_at = tonumber(now) or 0;
+    return true;
+end
+
+function runtime.shinryu_doom_rows(state, now)
+    local rows = {};
+    local shinryu = state and state.shinryu or nil;
+    if (shinryu == nil or not shinryu.doom.active) then return rows, nil, false; end
+    local doom = shinryu.doom;
+    now = tonumber(now) or 0;
+    if (doom.visible_until ~= nil and now > doom.visible_until) then
+        doom.active = false;
+        return rows, nil, false;
+    end
+    for _, target in pairs(doom.targets or {}) do table.insert(rows, target); end
+    table.sort(rows, function(a, b) return tostring(a.name):lower() < tostring(b.name):lower(); end);
+    local remaining = doom.expires_at ~= nil and (doom.expires_at - now) or nil;
+    return rows, remaining, doom.pending == true;
 end
 
 return runtime;

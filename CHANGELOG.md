@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.10.0
+- Replaced the first-target-only `0x028` reader with a complete variable-length parser that retains every target, every action result, and optional additional/spikes effects while preserving the original compatibility fields.
+- Added a read-only `0x029` status-observation parser as the foundation for per-party-member encounter triage.
+- Added Shinryu wing-state intelligence. Meteor confirms wings spread and the dangerous action-absorption stance; Comet confirms wings down and the damage window. Repeated spells do not spam duplicate stance alerts.
+- Added Supernova party Doom triage. Warn captures every exposed target from the completed TP-move packet, labels unconfirmed members **CHECK DOOM**, confirms Doom from status evidence, records clears, and displays the observed ten-count window in the tactical HUD.
+- Kept wing-cycle timing honest: the documented three-minute cycle is shown as encounter context, but no hard countdown begins from a later Meteor/Comet cast because that does not prove the exact model-transition time.
+- Added parser and Shinryu runtime regressions. The bundled database now contains **445 ability/spell rules, 24 encounter-state rules, and 430 indexed encounter entries**.
+
 ## 2.9.0
 - Added target-aware contextual alerts. Ou's 30% Target mechanic now names the affected player when packet target identity is available, and Ou's missing 65% Chainspell warning has been added.
 - Added a data-driven verified timer runtime distinct from uncertain learned readiness windows. Aminon's observed Bane of Tartarus now starts a four-minute countdown with a 15-second prewarning.

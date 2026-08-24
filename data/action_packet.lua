@@ -1,6 +1,7 @@
--- Minimal, read-only parser for incoming FFXI action packet 0x028.
+-- Read-only parser for incoming FFXI action packet 0x028.
 -- Supports both the retail / XiPackets header and the legacy SimpleLog / DSP
--- target-count header. Only the first target/action is retained by Warn.
+-- target-count header. Every target and action is retained; first-target fields
+-- remain available as compatibility aliases for older Warn callers.
 
 local action_packet = {};
 
@@ -50,21 +51,75 @@ function action_packet.parse(data, size, unpackBits, layoutPreference)
     end
     result.recast = read_at(118, 32);
 
-    if (result.target_count > 0) then
-        local actionOffset = 150;
-        result.target_id = read_at(actionOffset, 32);
-        result.action_count = read_at(actionOffset + 32, 4);
-        if (result.action_count > 8) then return nil, 'implausible action count'; end
-        if (result.action_count > 0) then
-            actionOffset = actionOffset + 36;
-            result.reaction = read_at(actionOffset, 5);
-            result.animation = read_at(actionOffset + 5, 12);
-            result.special_effect = read_at(actionOffset + 17, 7);
-            result.knockback = read_at(actionOffset + 24, 3);
-            result.action_param = read_at(actionOffset + 27, 17);
-            result.message = read_at(actionOffset + 44, 10);
+    -- The top-level action parameter is a 17-bit value followed by 15 reserved
+    -- bits. Keep the historical `param` field above intact while exposing the
+    -- precise value needed for completed monster skills (category 11).
+    result.param17 = read_at(86, 17);
+
+    result.targets = {};
+    local actionOffset = 150;
+    for targetIndex = 1, result.target_count do
+        local target = {
+            id = read_at(actionOffset, 32),
+            actions = {},
+        };
+        actionOffset = actionOffset + 32;
+        target.action_count = read_at(actionOffset, 4);
+        actionOffset = actionOffset + 4;
+        if (target.action_count > 16) then return nil, 'implausible action count'; end
+
+        for actionIndex = 1, target.action_count do
+            local action = {};
+            action.reaction = read_at(actionOffset, 5); actionOffset = actionOffset + 5;
+            action.animation = read_at(actionOffset, 12); actionOffset = actionOffset + 12;
+            action.special_effect = read_at(actionOffset, 7); actionOffset = actionOffset + 7;
+            action.knockback = read_at(actionOffset, 3); actionOffset = actionOffset + 3;
+            action.param = read_at(actionOffset, 17); actionOffset = actionOffset + 17;
+            action.message = read_at(actionOffset, 10); actionOffset = actionOffset + 10;
+            action.flags = read_at(actionOffset, 31); actionOffset = actionOffset + 31;
+
+            action.has_additional_effect = read_at(actionOffset, 1) == 1;
+            actionOffset = actionOffset + 1;
+            if (action.has_additional_effect) then
+                action.additional_effect = {
+                    damage = read_at(actionOffset, 10),
+                    param = read_at(actionOffset + 10, 17),
+                    message = read_at(actionOffset + 27, 10),
+                };
+                actionOffset = actionOffset + 37;
+            end
+
+            action.has_spikes_effect = read_at(actionOffset, 1) == 1;
+            actionOffset = actionOffset + 1;
+            if (action.has_spikes_effect) then
+                action.spikes_effect = {
+                    damage = read_at(actionOffset, 10),
+                    param = read_at(actionOffset + 10, 14),
+                    message = read_at(actionOffset + 24, 10),
+                };
+                actionOffset = actionOffset + 34;
+            end
+            table.insert(target.actions, action);
         end
+        table.insert(result.targets, target);
     end
+
+    -- Backward-compatible aliases used by Warn v2.9 and older tests.
+    local firstTarget = result.targets[1];
+    local firstAction = firstTarget ~= nil and firstTarget.actions[1] or nil;
+    if (firstTarget ~= nil) then
+        result.target_id = firstTarget.id;
+        result.action_count = firstTarget.action_count;
+    end
+    if (firstAction ~= nil) then
+        result.reaction = firstAction.reaction;
+        result.animation = firstAction.animation;
+        result.special_effect = firstAction.special_effect;
+        result.knockback = firstAction.knockback;
+        result.action_param = firstAction.param;
+        result.message = firstAction.message;
+    end
+    result.bits_consumed = actionOffset;
 
     if (malformed) then return nil, 'malformed action packet'; end
     return result;

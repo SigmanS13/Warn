@@ -24,6 +24,7 @@ warn/
   CONTRIBUTING.md
   data/
     action_packet.lua
+    status_packet.lua
     abilities.txt
     community.json
     community.lua
@@ -165,13 +166,13 @@ Current shipped rules are a verified starter set, not a claim of complete FFXI c
 Rules should preserve source/provenance metadata and should not guess whether a move is
 stunnable, silenceable, avoidable, etc.
 
-The v2.9 bundled database contains **443 ability/spell rules, 24 encounter-state rules, and
+The v2.10 bundled database contains **445 ability/spell rules, 24 encounter-state rules, and
 430 indexed encounter entries**. Historical Ambuscade Volume 2 has 54 actionable families out
 of 67 indexed families. All 30 indexed HTMB categories have direct rules or inherited actor rules,
 and all 85 encounters on the Geas Fete Aeonic route are indexed. Sortie includes all 17 named
 sector NMs and bosses. Odyssey includes 67 named Sheol/Gaol NMs plus the shared Mimic hazard.
 
-## v2.9 live tactical state
+## v2.10 live tactical state
 
 Warn now preserves packet target identity for contextual alerts. Ou's Target warning names the
 affected player when the incoming action packet exposes that target, and its previously missing
@@ -191,6 +192,13 @@ Dynamis - Divergence now counts live Elemental Circle entities. It reports clear
 corresponding Disjoined-boss damage reduction only after all eight Circles have been observed;
 partial entity visibility is labeled uncertain instead of being converted into a false clear count.
 The compact HUD is optional, positionable, and has independent opacity under Appearance.
+
+Incoming action packets now retain every target and every per-target result rather than only the
+first. Shinryu uses this foundation for Supernova: the tactical HUD lists all exposed party/alliance
+targets, marks confirmed Doom and observed clears from `0x029` status evidence, and leaves targets
+without authoritative status evidence labeled **CHECK DOOM**. Meteor and Comet also confirm the
+current wings-spread absorption stance or wings-down damage window. Warn does not start a false
+three-minute countdown from those spells because they prove the stance, not the exact transition time.
 
 ## v2.8 Skirmish, Unity Wanted, and Vagary
 

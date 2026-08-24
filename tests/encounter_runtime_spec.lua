@@ -37,4 +37,25 @@ eq(runtime.circle_damage_reduction(state), 50, 'Disjoined DT estimate');
 eq(runtime.record_bumba_packet(state, 'a', { signature='a' }), true, 'new Bumba diagnostic');
 eq(runtime.record_bumba_packet(state, 'a', { signature='a' }), false, 'duplicate Bumba diagnostic');
 
+eq(runtime.set_shinryu_wings(state, 'spread', 100, 'Meteor'), true, 'Shinryu wing state changes');
+eq(runtime.set_shinryu_wings(state, 'spread', 101, 'Meteor'), false, 'repeated wing evidence is not a transition');
+eq(state.shinryu.next_shift_at, nil, 'spell evidence does not invent a wing-transition countdown');
+runtime.set_shinryu_wings(state, 'down', 110, 'verified-transition');
+eq(state.shinryu.next_shift_at, 290, 'verified transition starts the three-minute wing cycle');
+runtime.prepare_shinryu_supernova(state, 200);
+local doomRows, doomRemaining, pending = runtime.shinryu_doom_rows(state, 201);
+eq(pending, true, 'Supernova triage waits for target results');
+runtime.observe_shinryu_supernova_targets(state, {
+    { id=1, name='Alpha', message=1 }, { id=2, name='Beta', message=2 },
+}, 202);
+runtime.observe_shinryu_doom(state, 1, 'Alpha', true, 203);
+runtime.observe_shinryu_doom(state, 2, 'Beta', false, 204);
+doomRows, doomRemaining, pending = runtime.shinryu_doom_rows(state, 205);
+eq(#doomRows, 2, 'all Supernova targets retained');
+eq(doomRows[1].status, 'doomed', 'confirmed Doom retained');
+eq(doomRows[2].status, 'cleared', 'cleared Doom retained');
+eq(doomRemaining, 7, 'Doom countdown uses observed action completion');
+doomRows = runtime.shinryu_doom_rows(state, 218);
+eq(#doomRows, 0, 'expired Doom triage is dismissed');
+
 print('encounter_runtime_spec: all checks passed');

@@ -37,6 +37,12 @@ timer = {
 Use timer metadata only for a documented fixed interval. Runtime state and certainty handling live
 in `../encounter_runtime.lua`; learned observations remain uncertain readiness windows.
 
+The `0x028` runtime now retains every packet target and every per-target action result. Rules may
+continue using `{target}` for the primary target; encounter-specific runtimes can consume the full
+`context.targets` collection when a verified party/alliance mechanic requires triage. Raw `0x029`
+status observations are parsed separately and must be constrained to a verified encounter window
+before they are interpreted as a gain or loss.
+
 After the bundled modules load, Warn can merge the validated data-only database at
 `../community.json`. Community entries with an existing stable rule ID replace that bundled rule;
 new IDs are appended. The downloaded file is strict JSON and is never executed as Lua.

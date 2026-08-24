@@ -1,4 +1,4 @@
-# Warn encounter database coverage — v2.9.0
+# Warn encounter database coverage — v2.10.0
 
 This file tracks **index coverage** separately from **verified actionable-rule coverage**. An encounter being indexed means Warn knows it belongs in the research set; it does **not** imply every mechanic has been verified yet.
 
@@ -18,7 +18,7 @@ This file tracks **index coverage** separately from **verified actionable-rule c
 - Unity Wanted: **56/56 Wanted NMs indexed**
 - Vagary: **5/5 mega bosses indexed**
 
-## Verified actionable coverage in v2.9
+## Verified actionable coverage in v2.10
 
 - Ambuscade Volume 1: **24 encounter families** have one or more contextual rules/state alerts.
 - Ambuscade Volume 2: **54 encounter families** now have one or more contextual rules/state alerts.
@@ -33,7 +33,7 @@ This file tracks **index coverage** separately from **verified actionable-rule c
 - Skirmish: **6 action alerts and 2 encounter-state warnings** cover Rala hazards, all four documented Cirdas Mistmaws, and Yorcia Stronghold defense.
 - Unity Wanted: **29 action alerts and 1 encounter-state warning** cover high-impact mechanics across the upper Wanted tiers and Tumult Curator.
 - Vagary: **5 of 5 mega bosses** have direct verified coverage, comprising 28 action alerts and 1 encounter-state warning.
-- Database total: **443 ability/spell rules + 24 encounter-state rules**, across **430 indexed encounter entries**.
+- Database total: **445 ability/spell rules + 24 encounter-state rules**, across **430 indexed encounter entries**.
 
 ### Major Volume 2 additions
 
@@ -57,7 +57,8 @@ Carcinus, Splendid Sakura, Symbiotic Marid, Februus, Ibong Adarna, Goes, and Ron
 - The Moonlit Path
 - Waking Dreams
 - Waking the Beast
-- Existing rules for Cloud of Darkness, Lilith, Odin, Alexander, Cait Sith, Shinryu, Ultima, Promathia, and Tenzen remain intact
+- Existing rules for Cloud of Darkness, Lilith, Odin, Alexander, Cait Sith, Ultima, Promathia, and Tenzen remain intact
+- Shinryu adds wings-spread absorption and wings-down damage-window state alerts plus multi-target Supernova Doom triage
 - Head Wind
 - Legacy of the Lost
 

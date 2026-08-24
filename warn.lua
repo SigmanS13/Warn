@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '2.9.0';
+addon.version   = '2.10.0';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -305,11 +305,14 @@ warn = T{
     },
     mechanics = nil,
     actionPacket = nil,
+    statusPacket = nil,
     reactive = T{
         recent = T{},
         packet_actions = 0,
         last_packet_action = '',
         last_packet_layout = '',
+        last_target_count = 0,
+        last_status_observation = '',
     },
 
     timerLearning = T{
@@ -721,8 +724,11 @@ local function load_mechanic_modules()
     if (policy == nil) then return false, err; end
     local packet; packet, err = load_data_module('action_packet.lua', 'parse');
     if (packet == nil) then return false, err; end
+    local statusPacket; statusPacket, err = load_data_module('status_packet.lua', 'parse');
+    if (statusPacket == nil) then return false, err; end
     warn.mechanics = policy;
     warn.actionPacket = packet;
+    warn.statusPacket = statusPacket;
     return true;
 end
 
@@ -1994,6 +2000,31 @@ local function find_packet_debuff_definition(effectIcon)
     return nil, resourceName;
 end
 
+local function get_any_packet_target_name(targetIndex, targetServerId)
+    local entityManager = AshitaCore:GetMemoryManager():GetEntity();
+    if (entityManager == nil) then return nil; end
+
+    local index = tonumber(targetIndex) or 0;
+    local entity = entityManager:GetRawEntity(index);
+    if (entity ~= nil and entity.Name ~= nil and tostring(entity.Name) ~= '') then
+        return tostring(entity.Name);
+    end
+
+    local wantedId = tonumber(targetServerId) or 0;
+    if (wantedId ~= 0) then
+        local mapSize = entityManager:GetEntityMapSize();
+        for i = 0, mapSize - 1 do
+            if (tonumber(entityManager:GetServerId(i)) == wantedId) then
+                local candidate = entityManager:GetRawEntity(i);
+                if (candidate ~= nil and candidate.Name ~= nil and tostring(candidate.Name) ~= '') then
+                    return tostring(candidate.Name);
+                end
+            end
+        end
+    end
+    return nil;
+end
+
 local function get_packet_target_name(targetIndex, targetServerId)
     local entityManager = AshitaCore:GetMemoryManager():GetEntity();
     if (entityManager == nil) then return nil; end
@@ -2085,6 +2116,41 @@ local function process_debuff_loss_packet(e)
     -- Packet evidence is authoritative enough to alert even if the gain text was filtered
     -- or used an unknown wording. Smart-maintenance statuses still honor capability checks.
     debuff_mark_lost(definition, name, false, true);
+end
+
+local function process_encounter_status_packet(e)
+    if (e == nil or e.id ~= 0x0029 or warn.statusPacket == nil or
+        warn.encounter == nil or warn.encounter.shinryu == nil or
+        not warn.encounter.shinryu.doom.active) then return; end
+
+    local data = e.data_modified or e.data_raw;
+    local parsed = warn.statusPacket.parse(data, function (format, packet, offset)
+        return struct.unpack(format, packet, offset);
+    end);
+    if (parsed == nil) then return; end
+
+    -- Buff id 15 is Doom. Restrict interpretation to the short Supernova triage
+    -- window so unrelated 0x029 message parameters cannot become false positives.
+    local effectName = nil;
+    local resources = AshitaCore:GetResourceManager();
+    if (resources ~= nil) then
+        local ok, value = pcall(function () return resources:GetString('buffs.names', parsed.param1); end);
+        if (ok and value ~= nil and tostring(value) ~= '') then effectName = tostring(value); end
+    end
+    local isDoom = tonumber(parsed.param1) == 15 or tostring(effectName or ''):lower() == 'doom';
+    if (not isDoom) then return; end
+
+    local name = get_any_packet_target_name(parsed.target_index, parsed.target_id);
+    if (name == nil or name == '') then name = 'Unknown party member'; end
+    local active = parsed.message_id ~= 204 and parsed.message_id ~= 206;
+    if (encounterRuntime.observe_shinryu_doom(warn.encounter, parsed.target_id, name, active, os.clock())) then
+        warn.reactive.last_status_observation = string.format('%s - Doom %s', name, active and 'gained' or 'cleared');
+        if (warn.debug) then
+            print(chat.header(addon.name):append(chat.warning(string.format(
+                'SHINRYU DOOM %s: %s (icon=%d, msg=%d)', active and 'GAIN' or 'CLEAR', name,
+                tonumber(parsed.param1) or -1, tonumber(parsed.message_id) or -1))));
+        end
+    end
 end
 
 local function process_global_debuff_message(rawMessage)
@@ -2590,10 +2656,19 @@ local function schedule_verified_rule_timer(rule, now)
 end
 
 local function apply_verified_rule_mode(rule, now)
-    if (rule == nil or rule.mode == nil) then return; end
+    if (rule == nil or rule.mode == nil) then return nil; end
     if (tostring(rule.encounter or '') == 'Aminon') then
         encounterRuntime.set_aminon_mode(warn.encounter, rule.mode.element, rule.mode.response, now);
+        return true;
     end
+    if (rule.mode.kind == 'shinryu_wings') then
+        return encounterRuntime.set_shinryu_wings(warn.encounter, rule.mode.state, now, rule.ability);
+    end
+    if (rule.mode.kind == 'shinryu_supernova') then
+        encounterRuntime.prepare_shinryu_supernova(warn.encounter, now);
+        return true;
+    end
+    return nil;
 end
 
 local function note_encounter_action(actorName, now)
@@ -2631,11 +2706,13 @@ local function process_detected_action(actorName, abilityName, eventType, rawMes
     -- Unknown observations remain local Learning evidence.
     local synthetic = rawMessage or (actorName .. ' ' .. eventType .. ' ' .. abilityName);
     local rule = find_context_ability_rule(eventType, abilityName, synthetic);
+    local modeChanged = nil;
     if (rule ~= nil and rule.verified == true) then
         schedule_verified_rule_timer(rule, now);
-        apply_verified_rule_mode(rule, now);
+        modeChanged = apply_verified_rule_mode(rule, now);
     end
-    if (rule ~= nil and rule.verified == true and trigger_context_rule(rule, abilityName, nil, context)) then
+    local shouldTrigger = rule == nil or rule.suppress_when_mode_unchanged ~= true or modeChanged == true;
+    if (rule ~= nil and rule.verified == true and shouldTrigger and trigger_context_rule(rule, abilityName, nil, context)) then
         if (warn.debug) then
             print(chat.header(addon.name):append(chat.message('Context Match: YES (' .. tostring(rule.id) .. ')')));
         end
@@ -2663,6 +2740,23 @@ local function find_entity_name_by_server_id(serverId)
         end
     end
     return nil;
+end
+
+local function build_entity_name_lookup()
+    local result = {};
+    local entityManager = AshitaCore:GetMemoryManager():GetEntity();
+    if (entityManager == nil) then return result; end
+    local mapSize = entityManager:GetEntityMapSize();
+    for index = 0, mapSize - 1 do
+        local id = tonumber(entityManager:GetServerId(index)) or 0;
+        if (id ~= 0) then
+            local entity = entityManager:GetRawEntity(index);
+            if (entity ~= nil and entity.Name ~= nil and tostring(entity.Name) ~= '') then
+                result[id] = tostring(entity.Name);
+            end
+        end
+    end
+    return result;
 end
 
 local function resolve_packet_action_name(actionType, actionId)
@@ -2710,6 +2804,37 @@ local function process_action_packet(event)
         end
     end
 
+    local resolvedTargets = {};
+    local entityNames = build_entity_name_lookup();
+    for _, target in ipairs(parsed.targets or {}) do
+        local firstAction = target.actions ~= nil and target.actions[1] or nil;
+        table.insert(resolvedTargets, {
+            id=target.id,
+            name=entityNames[tonumber(target.id) or 0] or ('Target ' .. tostring(target.id or '?')),
+            action_count=target.action_count,
+            message=firstAction ~= nil and firstAction.message or nil,
+            reaction=firstAction ~= nil and firstAction.reaction or nil,
+            actions=target.actions,
+        });
+    end
+    warn.reactive.last_target_count = #resolvedTargets;
+
+    -- Completed monster TP moves carry every affected target. They do not create a
+    -- duplicate ready alert, but they provide encounter triage and future status evidence.
+    if (parsed.action_type == 11) then
+        local completedAbility = resolve_packet_action_name(parsed.action_type, parsed.param17);
+        local doom = warn.encounter.shinryu ~= nil and warn.encounter.shinryu.doom or nil;
+        local awaitingSupernova = doom ~= nil and doom.pending == true and doom.readied_at ~= nil and
+            (os.clock() - doom.readied_at) <= 8.0;
+        if (actor ~= nil and tostring(actor):lower() == 'shinryu' and
+            (tostring(completedAbility or ''):lower() == 'supernova' or awaitingSupernova)) then
+            encounterRuntime.observe_shinryu_supernova_targets(warn.encounter, resolvedTargets, os.clock());
+            warn.reactive.last_packet_action = tostring(actor) .. ' - ' .. tostring(completedAbility or 'Supernova') ..
+                string.format(' (%d targets)', #resolvedTargets);
+        end
+        return;
+    end
+
     if (parsed.action_type ~= 7 and parsed.action_type ~= 8) then return; end
     -- Some private-server 0x028 packets leave the message field at zero even though the
     -- category and action payload are valid. Category 7/8 already identifies a begin event.
@@ -2722,8 +2847,13 @@ local function process_action_packet(event)
     warn.reactive.packet_actions = (warn.reactive.packet_actions or 0) + 1;
     warn.reactive.last_packet_action = tostring(actor) .. ' - ' .. tostring(ability);
     warn.reactive.last_packet_layout = tostring(parsed.layout or 'unknown');
-    local targetName = find_entity_name_by_server_id(parsed.target_id);
-    process_detected_action(actor, ability, eventType, nil, 'packet', { target_name=targetName, target_id=parsed.target_id });
+    local targetName = resolvedTargets[1] ~= nil and resolvedTargets[1].name or nil;
+    local targetNames = {};
+    for _, target in ipairs(resolvedTargets) do table.insert(targetNames, target.name); end
+    process_detected_action(actor, ability, eventType, nil, 'packet', {
+        target_name=targetName, target_id=parsed.target_id,
+        target_names=targetNames, targets=resolvedTargets,
+    });
 end
 
 local function save_pending_learning_data()
@@ -3804,9 +3934,13 @@ local function render_encounter_hud()
     local showAminon = warn.encounter.aminon.active;
     local showBumba = warn.encounter.bumba.active;
     local showCircles = warn.encounter.circles.active;
-    if (#timerRows == 0 and not showAminon and not showBumba and not showCircles) then return; end
+    local doomRows, doomRemaining, doomPending = encounterRuntime.shinryu_doom_rows(warn.encounter, now);
+    local showShinryu = warn.encounter.shinryu ~= nil and warn.encounter.shinryu.active;
+    if (#timerRows == 0 and not showAminon and not showBumba and not showCircles and not showShinryu) then return; end
 
-    local lineCount = #timerRows + (showAminon and 2 or 0) + (showBumba and 1 or 0) + (showCircles and 1 or 0);
+    local shinryuLines = showShinryu and (2 + math.min(#doomRows, 6) + ((doomPending or doomRemaining ~= nil) and 1 or 0)) or 0;
+    local lineCount = #timerRows + (showAminon and 2 or 0) + (showBumba and 1 or 0) +
+        (showCircles and 1 or 0) + shinryuLines;
     local width = 390 * get_ui_scale();
     local height = (46 + lineCount * 21) * get_ui_scale();
     local ui = warn.settings.ui;
@@ -3843,6 +3977,41 @@ local function render_encounter_hud()
                     circles.cleared or 0, encounterRuntime.circle_damage_reduction(warn.encounter) or 0));
             else
                 imgui.TextColored({ 0.72, 0.78, 0.86, 1.0 }, string.format('DIVERGENCE  %d Circles observed - full count uncertain', circles.alive or 0));
+            end
+        end
+        if (showShinryu) then
+            local shinryu = warn.encounter.shinryu;
+            if (shinryu.wings == 'spread') then
+                imgui.TextColored({ 1.0, 0.30, 0.25, 1.0 }, 'SHINRYU  WINGS SPREAD - ABSORPTION STANCE');
+            elseif (shinryu.wings == 'down') then
+                imgui.TextColored({ 0.55, 1.0, 0.60, 1.0 }, 'SHINRYU  WINGS DOWN - DAMAGE WINDOW');
+            else
+                imgui.TextColored({ 0.72, 0.78, 0.86, 1.0 }, 'SHINRYU  Wing stance awaiting spell evidence');
+            end
+            if (shinryu.next_shift_at ~= nil) then
+                local shiftRemaining = shinryu.next_shift_at - now;
+                imgui.TextColored({ 0.94, 0.88, 0.70, 1.0 }, 'Wing-cycle check  ' ..
+                    (shiftRemaining > 0 and format_seconds(shiftRemaining) or 'DUE - VERIFY STATE'));
+            else
+                imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 }, '3-minute cycle; exact transition timing awaits verified animation evidence.');
+            end
+
+            if (doomPending) then
+                imgui.TextColored({ 1.0, 0.45, 0.30, 1.0 }, 'SUPERNOVA READIED - WAITING FOR TARGET RESULTS');
+            elseif (doomRemaining ~= nil) then
+                imgui.TextColored({ 1.0, 0.30, 0.25, 1.0 }, 'DOOM TRIAGE  ' ..
+                    (doomRemaining > 0 and format_seconds(doomRemaining) or 'COUNT EXPIRED - VERIFY'));
+            end
+            for i = 1, math.min(#doomRows, 6) do
+                local target = doomRows[i];
+                local label = target.status == 'doomed' and 'DOOM CONFIRMED' or
+                    (target.status == 'cleared' and 'CLEARED' or 'CHECK DOOM');
+                local color = target.status == 'doomed' and { 1.0, 0.25, 0.22, 1.0 } or
+                    (target.status == 'cleared' and { 0.55, 1.0, 0.60, 1.0 } or { 1.0, 0.72, 0.25, 1.0 });
+                imgui.TextColored(color, tostring(target.name) .. '  ' .. label);
+            end
+            if (#doomRows > 6) then
+                imgui.TextColored({ 0.72, 0.78, 0.86, 1.0 }, string.format('+%d additional alliance targets', #doomRows - 6));
             end
         end
         for _, timer in ipairs(timerRows) do
@@ -5166,9 +5335,13 @@ local function render_alert_options()
     imgui.TextColored({ 1.0, 0.72, 0.25, 1.0 }, 'DANGER - meaningful damage, control or positioning risk');
     imgui.TextColored({ 1.0, 0.35, 0.30, 1.0 }, 'CRITICAL - lethal or fight-changing mechanic; factual warning always remains visible');
     imgui.TextColored({ 0.58, 0.62, 0.68, 1.0 }, string.format(
-        'Reactive packets recognized this session: %d%s%s', warn.reactive.packet_actions or 0,
+        'Reactive packets recognized this session: %d%s%s   Targets in last action: %d', warn.reactive.packet_actions or 0,
         warn.reactive.last_packet_action ~= '' and ('   Last: ' .. warn.reactive.last_packet_action) or '',
-        warn.reactive.last_packet_layout ~= '' and ('   Layout: ' .. warn.reactive.last_packet_layout) or ''));
+        warn.reactive.last_packet_layout ~= '' and ('   Layout: ' .. warn.reactive.last_packet_layout) or '',
+        warn.reactive.last_target_count or 0));
+    if (warn.reactive.last_status_observation ~= '') then
+        imgui.TextColored({ 0.58, 0.62, 0.68, 1.0 }, 'Last party-status observation: ' .. warn.reactive.last_status_observation);
+    end
 end
 
 function render_options_tab()
@@ -6006,6 +6179,7 @@ ashita.events.register('packet_in', 'packet_in_cb', function (e)
     -- Use the raw battle-message packet as the primary debuff-loss signal.  This avoids
     -- dependency on chat filters, localization wording, or whether text_in sees the line.
     if (e.id == 0x0029) then
+        process_encounter_status_packet(e);
         process_debuff_loss_packet(e);
     end
 
@@ -6018,6 +6192,8 @@ ashita.events.register('packet_in', 'packet_in_cb', function (e)
         warn.debuffs.next_scan = 0;
         warn.timerLearning.active_timers = {};
         warn.reactive.recent = {};
+        warn.reactive.last_target_count = 0;
+        warn.reactive.last_status_observation = '';
         warn.encounter = encounterRuntime.new_state();
     end
 end);
