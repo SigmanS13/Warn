@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.0.6
+- Rebuilt the potion and harp textures with genuine full-canvas alpha instead of a partially transparent image-generation checkerboard, so all four Roles icons now render without square backgrounds in Ashita.
+- Increased the minimum scrollbar gutter from roughly 14 pixels at 1080p to 42 pixels and applied it consistently to the current-encounter panel, manual results, encounter browser, rule list, and dashboard content layers.
+
+## 3.0.5
+- Replaced the small procedural role glyphs with sharp, dedicated shield, rounded potion, bow, and harp texture assets for Tank, Primary Healer, Damage Dealer, and Support.
+- Reworked the healer icon around a classic rounded potion silhouette: a preserved ivory stopper, rounded shoulders and base, dark indigo upper glass, and a clearly visible two-thirds-full ivory-gold potion.
+- Increased the minimum on-screen role-icon size for 1080p while retaining scale-aware sizing at 1440p and custom UI scales.
+- Made the icon itself a clickable extension of its role checkbox and retained lightweight line-art fallbacks if a theme omits an asset.
+- Added theme-level role-icon overrides under `themes/<theme>/roles/` so future themes can replace the four icons without changing Warn's Lua code.
+
+## 3.0.4
+- Hid the redundant native ImGui title bar and its red stock-theme strip; Warn now relies on its custom tactical header and close button.
+- Centered the Warn title/subtitle block and centered each tab description within the space beside the main tab buttons.
+- Removed the unnecessary outer dashboard scrollbar and added scaled right-side gutters between the Encounters view's nested scrolling panes.
+
 ## 3.0.3
 - Fixed the LuaJIT `main function has more than 200 local variables` load failure introduced in v3.0.2.
 - Extracted native WAV discovery, Windows playback, and process-session detection into `data/sound_runtime.lua` without changing the sound settings or alert behavior.

@@ -123,6 +123,20 @@ function theme.launcher_path(active_theme)
     return nil;
 end
 
+function theme.role_icon_path(active_theme, icon_name)
+    icon_name = tostring(icon_name or ''):lower();
+    if (not icon_name:match('^[%w_%-]+$')) then return nil; end
+    if (active_theme ~= nil and active_theme.user_dir ~= nil) then
+        local custom = string.format('%s\\roles\\%s.png', active_theme.user_dir, icon_name);
+        if (file_exists(custom)) then return custom; end
+    end
+    if (active_theme ~= nil and active_theme.packaged_dir ~= nil) then
+        local packaged = string.format('%s/roles/%s.png', active_theme.packaged_dir, icon_name);
+        if (file_exists(packaged)) then return packaged; end
+    end
+    return nil;
+end
+
 function theme.list(addon_path)
     local found = { vana_tactical = true };
     local roots = { string.format('%s/themes', addon_path), user_theme_root() };

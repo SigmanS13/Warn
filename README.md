@@ -152,8 +152,9 @@ Burst protection is enabled by default. **Options → Alerts** exposes the repea
 maximum queue size, current queue depth, and session suppression/drop counts. Disabling it restores
 the original single-card overwrite behavior but still does not create multiple notification windows.
 
-Advanced theme overrides are data-only. A custom `theme.txt` and optional `launcher.png` can
-be placed in `Ashita/config/addons/warn/themes/<name>/`; theme files cannot execute Lua.
+Advanced theme overrides are data-only. A custom `theme.txt`, optional `launcher.png`, and
+optional `roles/shield.png`, `roles/potion.png`, `roles/bow.png`, and `roles/harp.png` can be
+placed in `Ashita/config/addons/warn/themes/<name>/`; theme files cannot execute Lua.
 
 ## Main commands
 

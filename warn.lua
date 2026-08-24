@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '3.0.3';
+addon.version   = '3.0.6';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -272,6 +272,7 @@ warn = T{
     ui = T{
         theme = nil,
         launcher_texture = nil,
+        role_textures = T{},
         launcher_position_initialized = false,
         last_launcher_x = nil,
         last_launcher_y = nil,
@@ -709,6 +710,10 @@ local function reload_ui_theme()
     ensure_ui_settings();
     warn.ui.theme = uiTheme.load(addon.path, warn.settings.ui.theme);
     warn.ui.launcher_texture = uiTextures.load(uiTheme.launcher_path(warn.ui.theme));
+    warn.ui.role_textures = T{};
+    for _, icon in ipairs({ 'shield', 'potion', 'bow', 'harp' }) do
+        warn.ui.role_textures[icon] = uiTextures.load(uiTheme.role_icon_path(warn.ui.theme, icon));
+    end
 end
 
 local function ensure_responsibility_settings()
@@ -4735,7 +4740,8 @@ function guiOps.render_current_encounter_panel()
     if (#(state.candidates or {}) > 0 and profile == nil) then panelHeight = 190; end
     if (manualOpen) then panelHeight = panelHeight + 155; end
 
-    imgui.BeginChild('warn_current_encounter', { 0, panelHeight }, ImGuiChildFlags_Borders);
+    local scrollGutter = math.max(42, 56 * get_ui_scale());
+    imgui.BeginChild('warn_current_encounter', { -scrollGutter, panelHeight }, ImGuiChildFlags_Borders);
     imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Current Encounter');
     imgui.SameLine();
     if (imgui.Checkbox('Auto Detect##warn_encounter_auto', { warn.settings.context.encounter_detection })) then
@@ -4811,7 +4817,7 @@ function guiOps.render_current_encounter_panel()
         if (type(imgui.PushItemWidth) == 'function') then imgui.PushItemWidth(-1); end
         imgui.InputText('##warn_manual_encounter_search', warn.manualEncounterSearch, 255);
         if (type(imgui.PopItemWidth) == 'function') then imgui.PopItemWidth(); end
-        imgui.BeginChild('warn_manual_encounter_results', { 0, 125 }, ImGuiChildFlags_Borders);
+        imgui.BeginChild('warn_manual_encounter_results', { -scrollGutter, 125 }, ImGuiChildFlags_Borders);
         local term = warn.manualEncounterSearch[1] or '';
         for _, candidate in ipairs(warn.activeEncounter.engine.search(warn.activeEncounter.index, term, 15)) do
             local verifiedCount = #(candidate.rules or {});
@@ -5056,7 +5062,8 @@ function render_context_tab()
     ensure_rule_settings();
     ensure_ui_settings();
     local uiSettings = warn.settings.ui;
-    imgui.BeginChild('warn_encounters_scroll', { 0, 0 }, 0);
+    local scrollGutter = math.max(42, 56 * get_ui_scale());
+    imgui.BeginChild('warn_encounters_scroll', { -scrollGutter, 0 }, 0);
     imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Encounter Intelligence');
     guiOps.text_colored_wrapped({ 0.70, 0.78, 0.88, 1.0 },
         'Browse verified mechanics. Unknown observations enter Learning and never alert unless you explicitly Custom Watch them.');
@@ -5122,7 +5129,7 @@ function render_context_tab()
     imgui.EndChild();
     imgui.SameLine();
 
-    imgui.BeginChild('warn_encounter_browser', { 0, 410 }, ImGuiChildFlags_Borders);
+    imgui.BeginChild('warn_encounter_browser', { -scrollGutter, 410 }, ImGuiChildFlags_Borders);
     local searchTerm = warn.ruleSearch[1] ~= nil and warn.ruleSearch[1]:lower() or '';
     local visibleRules = {};
     for _, rule in ipairs(allRules) do
@@ -5137,7 +5144,7 @@ function render_context_tab()
         end
     end
 
-    imgui.BeginChild('warn_encounter_rule_list', { 0, 150 }, ImGuiChildFlags_Borders);
+    imgui.BeginChild('warn_encounter_rule_list', { -scrollGutter, 150 }, ImGuiChildFlags_Borders);
     for _, rule in ipairs(visibleRules) do
         local enabledPrefix = is_rule_enabled(rule) and '[X] ' or '[ ] ';
         local typePrefix = rule.__rule_type == 'state' and '[STATE] ' or '';
@@ -5766,6 +5773,13 @@ end
 
 function guiOps.draw_role_icon(icon, x, y, size)
     local draw = imgui.GetWindowDrawList();
+    local texture = warn.ui.role_textures and warn.ui.role_textures[icon] or nil;
+    local pointer = uiTextures.pointer(texture);
+    if (pointer ~= nil) then
+        draw:AddImage(pointer, { x, y }, { x + size, y + size },
+            { 0, 0 }, { 1, 1 }, 0xFFFFFFFF);
+        return;
+    end
     local color = imgui.GetColorU32((warn.ui.theme and warn.ui.theme.brass_hover) or { 1.0, 0.84, 0.50, 1.0 });
     local dim = imgui.GetColorU32((warn.ui.theme and warn.ui.theme.brass_dim) or { 0.55, 0.45, 0.25, 1.0 });
     local accent = imgui.GetColorU32((warn.ui.theme and warn.ui.theme.important) or { 0.30, 0.68, 1.0, 1.0 });
@@ -5845,13 +5859,20 @@ function guiOps.draw_role_icon(icon, x, y, size)
 end
 
 function guiOps.render_role_choice(definition, profile)
+    local scale = get_ui_scale();
     local cursor_x, cursor_y = imgui.GetCursorScreenPos();
+    local icon_clicked = false;
     if (definition.icon ~= nil) then
-        guiOps.draw_role_icon(definition.icon, cursor_x + 1, cursor_y - 1, 24 * get_ui_scale());
-        imgui.SetCursorPosX(imgui.GetCursorPosX() + (33 * get_ui_scale()));
+        local icon_size = math.max(28, 32 * scale);
+        guiOps.draw_role_icon(definition.icon, cursor_x, cursor_y, icon_size);
+        imgui.InvisibleButton('##responsibility_icon_' .. definition.id, { icon_size, icon_size });
+        icon_clicked = imgui.IsItemClicked(0);
+        imgui.SameLine();
+        imgui.SetCursorScreenPos({ cursor_x + icon_size + (8 * scale),
+            cursor_y + math.max(0, (icon_size - (24 * scale)) * 0.5) });
     end
     local enabled = profile[definition.id] == true;
-    if (imgui.Checkbox(definition.label .. '##responsibility_' .. definition.id, { enabled })) then
+    if (imgui.Checkbox(definition.label .. '##responsibility_' .. definition.id, { enabled }) or icon_clicked) then
         profile[definition.id] = not enabled;
         save_settings();
     end
@@ -6136,8 +6157,11 @@ function render_config_window()
     end
     imgui.SetNextWindowSizeConstraints({ 720 * scale, 600 * scale, }, { FLT_MAX, FLT_MAX, });
     uiTheme.push(warn.ui.theme, scale);
-    local flags = bit.bor(ImGuiWindowFlags_NoTitleBar, ImGuiWindowFlags_NoCollapse);
-    if (imgui.Begin('WARN##warn_dashboard', warn.isGuiOpen, flags)) then
+    local flags = bit.bor(ImGuiWindowFlags_NoTitleBar, ImGuiWindowFlags_NoCollapse,
+        ImGuiWindowFlags_NoScrollbar, ImGuiWindowFlags_NoScrollWithMouse);
+    -- Warn has its own close control and custom header. Passing a mutable open-state
+    -- pointer can make some Ashita ImGui builds restore their native title bar.
+    if (imgui.Begin('##warn_dashboard', true, flags)) then
         local window_x, window_y = imgui.GetWindowPos();
         local window_width, window_height = imgui.GetWindowSize();
         local draw = imgui.GetWindowDrawList();
@@ -6155,16 +6179,35 @@ function render_config_window()
         draw:AddLine({ window_x + window_width - 7 * scale, window_y + 7 * scale },
             { window_x + window_width - 7 * scale, window_y + corner }, dim, 2 * scale);
 
+        local function measure_text_width(value)
+            if (type(imgui.CalcTextSize) == 'function') then
+                local ok, measured = pcall(imgui.CalcTextSize, tostring(value or ''));
+                if (ok and measured ~= nil) then
+                    local numericOk, numericWidth = pcall(function () return tonumber(measured[1]); end);
+                    if (numericOk and numericWidth ~= nil) then return numericWidth; end
+                    local namedOk, namedWidth = pcall(function () return tonumber(measured.x); end);
+                    if (namedOk and namedWidth ~= nil) then return namedWidth; end
+                end
+            end
+            return #tostring(value or '') * 8 * scale;
+        end
+
         local pointer = uiTextures.pointer(warn.ui.launcher_texture);
         if (pointer ~= nil) then
             imgui.Image(pointer, { 44 * scale, 44 * scale }, { 0, 0 }, { 1, 1 });
             imgui.SameLine();
         end
+        local headerTitle = 'WARN';
+        local headerSubtitle = 'VANA\'DIEL TACTICAL ENCOUNTER ASSISTANT';
+        local headerWidth = math.max(measure_text_width(headerTitle), measure_text_width(headerSubtitle));
+        local headerLeft = math.max(imgui.GetCursorPosX(), (window_width - headerWidth) * 0.5);
         imgui.BeginGroup();
         set_ui_font_scale(1.28 * scale);
-        imgui.TextColored(warn.ui.theme.brass_hover, 'WARN');
+        imgui.SetCursorPosX(headerLeft + math.max(0, (headerWidth - measure_text_width(headerTitle)) * 0.5));
+        imgui.TextColored(warn.ui.theme.brass_hover, headerTitle);
         set_ui_font_scale(0.82 * scale);
-        imgui.TextColored(warn.ui.theme.text_muted, 'VANA\'DIEL TACTICAL ENCOUNTER ASSISTANT');
+        imgui.SetCursorPosX(headerLeft);
+        imgui.TextColored(warn.ui.theme.text_muted, headerSubtitle);
         set_ui_font_scale(1.0);
         imgui.EndGroup();
         imgui.SameLine();
@@ -6181,12 +6224,18 @@ function render_config_window()
         if (imgui.Button('OPTIONS##warn_main_options', { tab_width, 34 * scale })) then warn.mainTab[1] = 2; end
         if (warn.mainTab[1] == 2) then imgui.PopStyleColor(); end
         imgui.SameLine();
-        imgui.TextColored(warn.ui.theme.text_muted,
-            warn.mainTab[1] == 1 and '  Verified encounter intelligence and custom watches'
-                or '  Roles, learning, alerts, appearance, and sound');
+        local tabDescription = warn.mainTab[1] == 1 and 'Verified encounter intelligence and custom watches'
+            or 'Roles, learning, alerts, appearance, and sound';
+        local descriptionStart = imgui.GetCursorPosX();
+        local descriptionWidth = measure_text_width(tabDescription);
+        local centeredDescriptionX = descriptionStart + math.max(0,
+            (window_width - descriptionStart - 18 * scale - descriptionWidth) * 0.5);
+        imgui.SetCursorPosX(centeredDescriptionX);
+        imgui.TextColored(warn.ui.theme.text_muted, tabDescription);
         imgui.Separator();
 
-        imgui.BeginChild('warn_main_content', { 0, -28 * scale }, 0);
+        local mainScrollGutter = math.max(42, 56 * scale);
+        imgui.BeginChild('warn_main_content', { -mainScrollGutter, -28 * scale }, 0);
         if (warn.mainTab[1] == 1) then render_context_tab(); else render_options_tab(); end
         imgui.EndChild();
         imgui.Separator();
