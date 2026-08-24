@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.9.0
+- Added target-aware contextual alerts. Ou's 30% Target mechanic now names the affected player when packet target identity is available, and Ou's missing 65% Chainspell warning has been added.
+- Added a data-driven verified timer runtime distinct from uncertain learned readiness windows. Aminon's observed Bane of Tartarus now starts a four-minute countdown with a 15-second prewarning.
+- Added live Aminon elemental-mode tracking with the required counter-element, mode age, and a clearly scoped estimate of damage reduction accumulated during the current unprocced mode.
+- Added Bumba V0-V15, V20, and V25 fetter timers, a manual absorbed-element selector, a 60-second element-check cue, and an opt-in in-memory packet signature recorder for validating future automatic dust-color recognition.
+- Added an optional compact tactical HUD with independent position and opacity settings.
+- Added a live Dynamis - Divergence Elemental Circle checklist. Clear counts and estimated Disjoined-boss damage reduction appear only after all eight Circles have been observed; partial visibility remains explicitly uncertain.
+- Added pure regression coverage for verified timers, Aminon state, Bumba state, Circle certainty, and packet-signature deduplication. The bundled database now contains **443 ability/spell rules, 24 encounter-state rules, and 430 indexed encounter entries**.
+
 ## 2.8.0
 - Added a 21-entry original and Alluvion Skirmish index with six verified action alerts and two encounter-state warnings. Sparsely documented Mistmaws remain safely indexed-only.
 - Added the complete 56-NM Unity Wanted roster, grouped by content level and Wanted category, plus 29 high-impact alerts and a live Goblin Mine proximity warning.

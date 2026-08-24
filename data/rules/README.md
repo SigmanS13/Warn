@@ -24,6 +24,19 @@ Warn's encounter knowledge is intentionally kept outside `warn.lua` so the datab
 
 `../rules.lua` loads these modules and merges their `ability_rules`, `state_rules`, and catalog entries.
 
+Verified scripted timers can be attached to an ability rule without turning learned repetition into
+a hard countdown:
+
+```lua
+timer = {
+    id='example_verified_timer', label='EXAMPLE MECHANIC', interval=240, prewarn=15,
+    prewarn_message='EXAMPLE MECHANIC IN 15 SECONDS!',
+}
+```
+
+Use timer metadata only for a documented fixed interval. Runtime state and certainty handling live
+in `../encounter_runtime.lua`; learned observations remain uncertain readiness windows.
+
 After the bundled modules load, Warn can merge the validated data-only database at
 `../community.json`. Community entries with an existing stable rule ID replace that bundled rule;
 new IDs are appended. The downloaded file is strict JSON and is never executed as Lua.

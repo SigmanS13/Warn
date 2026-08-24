@@ -1,4 +1,4 @@
-# Warn encounter database coverage — v2.8.0
+# Warn encounter database coverage — v2.9.0
 
 This file tracks **index coverage** separately from **verified actionable-rule coverage**. An encounter being indexed means Warn knows it belongs in the research set; it does **not** imply every mechanic has been verified yet.
 
@@ -18,12 +18,12 @@ This file tracks **index coverage** separately from **verified actionable-rule c
 - Unity Wanted: **56/56 Wanted NMs indexed**
 - Vagary: **5/5 mega bosses indexed**
 
-## Verified actionable coverage in v2.8
+## Verified actionable coverage in v2.9
 
 - Ambuscade Volume 1: **24 encounter families** have one or more contextual rules/state alerts.
 - Ambuscade Volume 2: **54 encounter families** now have one or more contextual rules/state alerts.
 - HTMB: **30 of 30 categories** have direct encounter rules or inherited actor rules. **Divine Might** benefits from the individual Ark Angel actor rules, because Warn matches those bosses by actor name regardless of which Ark Angel battlefield they appear in.
-- Omen: **9 of 9 indexed bosses** have direct verified rules.
+- Omen: **9 of 9 indexed bosses** have direct verified rules, now comprising 28 alerts after adding Ou's 65% Chainspell event.
 - Geas Fete: **16 of 85 indexed encounters** have direct verified rules, comprising 34 alerts for Warder of Courage, Reisenjima HELMs, Zi'Tah HELMs, and Ru'Aun gods.
 - Sortie: **9 of 17 indexed encounters** have direct verified coverage, comprising 44 action alerts and 2 encounter-state warnings for every major boss.
 - Odyssey: **8 of 68 indexed entries** have direct verified coverage, comprising 24 alerts for the shared Mimic hazard and all seven Atonement 3-4 bosses.
@@ -33,7 +33,7 @@ This file tracks **index coverage** separately from **verified actionable-rule c
 - Skirmish: **6 action alerts and 2 encounter-state warnings** cover Rala hazards, all four documented Cirdas Mistmaws, and Yorcia Stronghold defense.
 - Unity Wanted: **29 action alerts and 1 encounter-state warning** cover high-impact mechanics across the upper Wanted tiers and Tumult Curator.
 - Vagary: **5 of 5 mega bosses** have direct verified coverage, comprising 28 action alerts and 1 encounter-state warning.
-- Database total: **442 ability/spell rules + 24 encounter-state rules**, across **430 indexed encounter entries**.
+- Database total: **443 ability/spell rules + 24 encounter-state rules**, across **430 indexed encounter entries**.
 
 ### Major Volume 2 additions
 

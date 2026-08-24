@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '2.8.0';
+addon.version   = '2.9.0';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -46,6 +46,7 @@ local uiTheme  = require('ui.theme');
 local uiTextures = require('ui.textures');
 local uiPortraits = require('ui.portraits');
 local encounterBrowser = require('ui.encounter_browser');
+local encounterRuntime = require('data.encounter_runtime');
 
 local COMMUNITY_MANIFEST_URL = 'https://raw.githubusercontent.com/SigmanS13/Warn/main/community/manifest.json';
 
@@ -90,6 +91,9 @@ local default_settings = T{
         controller_layout    = 'xinput', -- xinput / playstation / switch
         show_indexed_only    = false,
         encounter_collapsed  = T{},
+        encounter_hud_x      = 24,
+        encounter_hud_y      = 150,
+        encounter_hud_opacity = 0.86,
     },
     sound = T{
         enabled  = false,
@@ -102,6 +106,10 @@ local default_settings = T{
         state_triggers    = true,
         packet_recognition = true,
         packet_layout      = 'auto', -- auto / retail / legacy (SimpleLog / DSP)
+        encounter_hud      = true,
+        encounter_diagnostics = false,
+        bumba_element      = 'unknown',
+        bumba_vengeance    = 'v25',
     },
     responsibilities = T{
         profiles = T{},
@@ -313,6 +321,8 @@ warn = T{
         selected_key = nil,
         show_ignored = T{ false },
     },
+
+    encounter = encounterRuntime.new_state(),
 
     community = T{
         engine = nil,
@@ -570,6 +580,10 @@ local function ensure_context_settings()
             state_triggers = true,
             packet_recognition = true,
             packet_layout = 'auto',
+            encounter_hud = true,
+            encounter_diagnostics = false,
+            bumba_element = 'unknown',
+            bumba_vengeance = 'v25',
         };
         save_settings();
         return;
@@ -580,6 +594,10 @@ local function ensure_context_settings()
     if (warn.settings.context.contextual_sounds == nil) then warn.settings.context.contextual_sounds = true; end
     if (warn.settings.context.state_triggers == nil) then warn.settings.context.state_triggers = true; end
     if (warn.settings.context.packet_recognition == nil) then warn.settings.context.packet_recognition = true; end
+    if (warn.settings.context.encounter_hud == nil) then warn.settings.context.encounter_hud = true; end
+    if (warn.settings.context.encounter_diagnostics == nil) then warn.settings.context.encounter_diagnostics = false; end
+    if (warn.settings.context.bumba_element == nil) then warn.settings.context.bumba_element = 'unknown'; end
+    if (warn.settings.context.bumba_vengeance == nil) then warn.settings.context.bumba_vengeance = 'v25'; end
     if (warn.settings.context.packet_layout ~= 'retail' and warn.settings.context.packet_layout ~= 'legacy') then
         warn.settings.context.packet_layout = 'auto';
     end
@@ -599,6 +617,9 @@ local function ensure_ui_settings()
     if (cfg.controller_layout == nil) then cfg.controller_layout = 'xinput'; end
     if (cfg.show_indexed_only == nil) then cfg.show_indexed_only = false; end
     if (cfg.encounter_collapsed == nil) then cfg.encounter_collapsed = T{}; end
+    if (cfg.encounter_hud_x == nil) then cfg.encounter_hud_x = 24; end
+    if (cfg.encounter_hud_y == nil) then cfg.encounter_hud_y = 150; end
+    if (cfg.encounter_hud_opacity == nil) then cfg.encounter_hud_opacity = 0.86; end
 
     if (warn.settings.overlay == nil) then warn.settings.overlay = T{}; end
     local overlay = warn.settings.overlay;
@@ -1327,7 +1348,7 @@ local function get_available_counter(rule)
     return nil;
 end
 
-local function build_context_text(rule, messageOverride)
+local function build_context_text(rule, messageOverride, context)
     if (rule == nil) then return nil, nil; end
 
     local counter = get_available_counter(rule);
@@ -1338,6 +1359,10 @@ local function build_context_text(rule, messageOverride)
     end
 
     local text = messageOverride or rule.message or rule.ability or rule.actor or 'WARNING';
+    if (text:find('{target}', 1, true) ~= nil) then
+        local targetName = context ~= nil and trim(tostring(context.target_name or '')) or '';
+        text = text:gsub('{target}', targetName ~= '' and targetName or 'TARGETED PLAYER');
+    end
     if (counter ~= nil) then
         text = text .. '\n' .. (counter.label or counter.name:upper());
     end
@@ -1422,10 +1447,10 @@ local function entity_position(entity)
     return tonumber(p.X), tonumber(p.Y), tonumber(p.Z);
 end
 
-local function trigger_context_rule(rule, fallbackName, messageOverride)
+local function trigger_context_rule(rule, fallbackName, messageOverride, context)
     if (rule == nil or rule.verified ~= true or not is_rule_enabled(rule)) then return false; end
 
-    local text = build_context_text(rule, messageOverride);
+    local text = build_context_text(rule, messageOverride, context);
     if (text == nil) then return false; end
 
     warn.active.name = fallbackName or rule.ability or rule.actor or 'WARNING';
@@ -2554,7 +2579,31 @@ local function action_event_key(actor, ability, eventType)
     return (tostring(actor or '') .. '|' .. tostring(ability or '') .. '|' .. tostring(eventType or '')):lower();
 end
 
-local function process_detected_action(actorName, abilityName, eventType, rawMessage, source)
+local function schedule_verified_rule_timer(rule, now)
+    if (rule == nil or rule.timer == nil) then return; end
+    local definition = {};
+    for key, value in pairs(rule.timer) do definition[key] = value; end
+    definition.id = definition.id or rule.id;
+    definition.label = definition.label or rule.ability or rule.actor;
+    definition.source_rule_id = rule.id;
+    encounterRuntime.schedule_timer(warn.encounter, definition, now);
+end
+
+local function apply_verified_rule_mode(rule, now)
+    if (rule == nil or rule.mode == nil) then return; end
+    if (tostring(rule.encounter or '') == 'Aminon') then
+        encounterRuntime.set_aminon_mode(warn.encounter, rule.mode.element, rule.mode.response, now);
+    end
+end
+
+local function note_encounter_action(actorName, now)
+    if (tostring(actorName or ''):lower() == 'bumba' and warn.encounter.bumba.engaged_at == nil) then
+        ensure_context_settings();
+        encounterRuntime.start_bumba(warn.encounter, warn.settings.context.bumba_vengeance, now);
+    end
+end
+
+local function process_detected_action(actorName, abilityName, eventType, rawMessage, source, context)
     if (abilityName == nil or abilityName == '') then return false; end
     actorName = clean_action_name(actorName);
     abilityName = clean_action_name(abilityName);
@@ -2576,12 +2625,17 @@ local function process_detected_action(actorName, abilityName, eventType, rawMes
     end
 
     record_timer_learning_event(actorName, abilityName, eventType);
+    note_encounter_action(actorName, now);
 
     -- Only verified rules and explicit Custom Watches can create a player-facing alert.
     -- Unknown observations remain local Learning evidence.
     local synthetic = rawMessage or (actorName .. ' ' .. eventType .. ' ' .. abilityName);
     local rule = find_context_ability_rule(eventType, abilityName, synthetic);
-    if (rule ~= nil and rule.verified == true and trigger_context_rule(rule, abilityName)) then
+    if (rule ~= nil and rule.verified == true) then
+        schedule_verified_rule_timer(rule, now);
+        apply_verified_rule_mode(rule, now);
+    end
+    if (rule ~= nil and rule.verified == true and trigger_context_rule(rule, abilityName, nil, context)) then
         if (warn.debug) then
             print(chat.header(addon.name):append(chat.message('Context Match: YES (' .. tostring(rule.id) .. ')')));
         end
@@ -2641,12 +2695,26 @@ local function process_action_packet(event)
         return;
     end
 
+    local actor = find_entity_name_by_server_id(parsed.actor_id);
+    if (actor ~= nil and actor:lower() == 'bumba' and warn.settings.context.encounter_diagnostics) then
+        local signature = string.format('%d:%d:%d:%d:%d', tonumber(parsed.action_type) or -1,
+            tonumber(parsed.param) or -1, tonumber(parsed.action_param) or -1,
+            tonumber(parsed.animation) or -1, tonumber(parsed.special_effect) or -1);
+        local details = {
+            signature=signature, at=os.clock(), action_type=parsed.action_type, param=parsed.param,
+            action_param=parsed.action_param, animation=parsed.animation,
+            special_effect=parsed.special_effect, message=parsed.message,
+        };
+        if (encounterRuntime.record_bumba_packet(warn.encounter, signature, details) and warn.debug) then
+            print(chat.header(addon.name):append(chat.message('Bumba packet signature: ' .. signature)));
+        end
+    end
+
     if (parsed.action_type ~= 7 and parsed.action_type ~= 8) then return; end
     -- Some private-server 0x028 packets leave the message field at zero even though the
     -- category and action payload are valid. Category 7/8 already identifies a begin event.
     if (parsed.action_count == nil or parsed.action_count < 1) then return; end
 
-    local actor = find_entity_name_by_server_id(parsed.actor_id);
     local ability = resolve_packet_action_name(parsed.action_type, parsed.action_param);
     if (actor == nil or ability == nil or tostring(ability) == '') then return; end
 
@@ -2654,7 +2722,8 @@ local function process_action_packet(event)
     warn.reactive.packet_actions = (warn.reactive.packet_actions or 0) + 1;
     warn.reactive.last_packet_action = tostring(actor) .. ' - ' .. tostring(ability);
     warn.reactive.last_packet_layout = tostring(parsed.layout or 'unknown');
-    process_detected_action(actor, ability, eventType, nil, 'packet');
+    local targetName = find_entity_name_by_server_id(parsed.target_id);
+    process_detected_action(actor, ability, eventType, nil, 'packet', { target_name=targetName, target_id=parsed.target_id });
 end
 
 local function save_pending_learning_data()
@@ -3115,6 +3184,60 @@ local function update_state_rules()
                 end
             end
         end
+    end
+end
+
+local function trigger_runtime_timer_alert(event)
+    if (event == nil or event.timer == nil) then return; end
+    local timer = event.timer;
+    local message = nil;
+    if (event.kind == 'prewarn') then
+        message = timer.prewarn_message or string.format('%s IN %d SECONDS!', timer.label, math.max(1, math.ceil(event.remaining)));
+    else
+        message = timer.due_message or (timer.label .. ' DUE NOW!');
+    end
+    local rule = find_context_rule_by_id(timer.source_rule_id);
+    if (rule == nil) then
+        rule = {
+            id='__runtime_timer_' .. tostring(timer.id), verified=true, message=message,
+            severity=timer.severity or 'critical', prediction='scripted', sound='alarm.wav', duration=5.0,
+        };
+    end
+    trigger_context_rule(rule, timer.label, message);
+end
+
+local function update_verified_encounter_timers()
+    for _, event in ipairs(encounterRuntime.update_timers(warn.encounter, os.clock())) do
+        trigger_runtime_timer_alert(event);
+    end
+end
+
+local function update_divergence_circle_state()
+    local now = os.clock();
+    if (now < (warn.encounter.next_object_scan or 0)) then return; end
+    warn.encounter.next_object_scan = now + 0.50;
+
+    local alive = 0;
+    local bossPresent = false;
+    local entityManager = AshitaCore:GetMemoryManager():GetEntity();
+    if (entityManager ~= nil) then
+        local mapSize = entityManager:GetEntityMapSize();
+        for i = 0, mapSize - 1 do
+            local entity = entityManager:GetRawEntity(i);
+            if (entity ~= nil and entity.Name ~= nil and entity.SpawnFlags ~= nil and bit.band(entity.SpawnFlags, 0x10) ~= 0) then
+                local name = tostring(entity.Name);
+                if (name == 'Elemental Circle') then alive = alive + 1; end
+                if (name == 'Disjoined Elvaan' or name == 'Disjoined Galka' or
+                    name == 'Disjoined Tarutaru' or name == 'Disjoined Mithra') then
+                    bossPresent = true;
+                end
+            end
+        end
+    end
+
+    if (alive > 0 or bossPresent or warn.encounter.circles.active) then
+        encounterRuntime.observe_circles(warn.encounter, alive, now);
+        if (bossPresent) then warn.encounter.circles.active = true; end
     end
 end
 
@@ -3623,7 +3746,8 @@ local function render_warning_card(state, is_critical, previewing)
         local prediction = tostring(state.prediction or 'reactive');
         imgui.SetCursorScreenPos({ win_x + width - 168 * scale, win_y + 14 * scale });
         imgui.TextColored(color_with_alpha(active_theme.text_muted, entry_alpha),
-            prediction == 'readiness' and 'READINESS ESTIMATE' or 'REACTIVE RECOGNITION');
+            prediction == 'readiness' and 'READINESS ESTIMATE'
+                or (prediction == 'scripted' and 'VERIFIED SCRIPT' or 'REACTIVE RECOGNITION'));
 
         imgui.SetCursorScreenPos({ win_x + 31 * scale, win_y + 51 * scale });
         set_ui_font_scale(1.34 * scale);
@@ -3668,6 +3792,67 @@ function render_overlay()
         warn.ui.next_position_save = nil;
         save_settings();
     end
+end
+
+local function render_encounter_hud()
+    ensure_context_settings();
+    ensure_ui_settings();
+    if (not warn.settings.context.encounter_hud) then return; end
+
+    local now = os.clock();
+    local timerRows = encounterRuntime.timer_rows(warn.encounter, now);
+    local showAminon = warn.encounter.aminon.active;
+    local showBumba = warn.encounter.bumba.active;
+    local showCircles = warn.encounter.circles.active;
+    if (#timerRows == 0 and not showAminon and not showBumba and not showCircles) then return; end
+
+    local lineCount = #timerRows + (showAminon and 2 or 0) + (showBumba and 1 or 0) + (showCircles and 1 or 0);
+    local width = 390 * get_ui_scale();
+    local height = (46 + lineCount * 21) * get_ui_scale();
+    local ui = warn.settings.ui;
+    local flags = bit.bor(ImGuiWindowFlags_NoDecoration, ImGuiWindowFlags_NoResize,
+        ImGuiWindowFlags_NoScrollbar, ImGuiWindowFlags_NoSavedSettings,
+        ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags_NoBringToFrontOnFocus,
+        ImGuiWindowFlags_NoMove, ImGuiWindowFlags_NoInputs);
+    imgui.SetNextWindowPos({ tonumber(ui.encounter_hud_x) or 24, tonumber(ui.encounter_hud_y) or 150 }, ImGuiCond_Always);
+    imgui.SetNextWindowSize({ width, height }, ImGuiCond_Always);
+    imgui.PushStyleColor(ImGuiCol_WindowBg, { 0.018, 0.045, 0.11, tonumber(ui.encounter_hud_opacity) or 0.86 });
+    imgui.PushStyleColor(ImGuiCol_Border, { 0.78, 0.60, 0.28, 0.95 });
+    if (imgui.Begin('##warn_tactical_hud', true, flags)) then
+        imgui.TextColored({ 0.96, 0.78, 0.32, 1.0 }, 'WARN  /  LIVE TACTICAL STATE');
+        imgui.Separator();
+        if (showBumba) then
+            local element = tostring(warn.encounter.bumba.element or 'unknown'):upper();
+            if (element == 'UNKNOWN') then
+                imgui.TextColored({ 0.72, 0.78, 0.86, 1.0 }, 'BUMBA  Element: confirm dust-cloud color');
+            else
+                imgui.TextColored({ 1.0, 0.72, 0.25, 1.0 }, 'BUMBA  ABSORBING ' .. element .. ' - AVOID ' .. element);
+            end
+        end
+        if (showAminon) then
+            local dt, age = encounterRuntime.aminon_dt_estimate(warn.encounter, now);
+            imgui.TextColored({ 0.72, 0.88, 1.0, 1.0 }, string.format('AMINON  %s MODE - USE %s',
+                tostring(warn.encounter.aminon.mode):upper(), tostring(warn.encounter.aminon.response):upper()));
+            local status = warn.encounter.aminon.proc_confirmed and 'PROC CONFIRMED' or string.format('Mode age %s / possible +%d%% DT', format_seconds(age), dt);
+            imgui.TextColored(warn.encounter.aminon.proc_confirmed and { 0.55, 1.0, 0.60, 1.0 } or { 1.0, 0.72, 0.25, 1.0 }, status);
+        end
+        if (showCircles) then
+            local circles = warn.encounter.circles;
+            if (circles.reliable) then
+                imgui.Text(string.format('DIVERGENCE  Circles %d/8 cleared - boss DT ~-%d%%',
+                    circles.cleared or 0, encounterRuntime.circle_damage_reduction(warn.encounter) or 0));
+            else
+                imgui.TextColored({ 0.72, 0.78, 0.86, 1.0 }, string.format('DIVERGENCE  %d Circles observed - full count uncertain', circles.alive or 0));
+            end
+        end
+        for _, timer in ipairs(timerRows) do
+            local value = timer.remaining > 0 and format_seconds(timer.remaining) or 'DUE / WAITING FOR RESET';
+            imgui.TextColored(timer.remaining <= 15 and { 1.0, 0.35, 0.30, 1.0 } or { 0.94, 0.88, 0.70, 1.0 },
+                tostring(timer.label) .. '  ' .. value);
+        end
+    end
+    imgui.End();
+    imgui.PopStyleColor(2);
 end
 
 --------------------------------------------------------------------------------------------------
@@ -3883,6 +4068,22 @@ function render_appearance_tab()
     end
 
     imgui.Separator();
+    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Live Tactical HUD');
+    local hudOpacity = { tonumber(ui.encounter_hud_opacity) or 0.86 };
+    if (imgui.SliderFloat('Tactical HUD Opacity', hudOpacity, 0.20, 1.0, '%.2f')) then
+        ui.encounter_hud_opacity = hudOpacity[1];
+        save_settings();
+    end
+    local hudPosition = { math.floor(tonumber(ui.encounter_hud_x) or 24), math.floor(tonumber(ui.encounter_hud_y) or 150) };
+    if (imgui.InputInt2('HUD X / Y##warn_hud_position', hudPosition)) then
+        ui.encounter_hud_x = hudPosition[1];
+        ui.encounter_hud_y = hudPosition[2];
+        save_settings();
+    end
+    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 },
+        'The compact HUD appears only while a verified timer or supported encounter state is active.');
+
+    imgui.Separator();
     imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Controller Navigation');
     if (imgui.Checkbox('Enable Controller Navigation', { ui.controller_enabled })) then
         ui.controller_enabled = not ui.controller_enabled;
@@ -4010,6 +4211,131 @@ local function render_rule_detail(selectedRule)
     text_colored_wrapped({ 0.55, 0.58, 0.64, 1.0 }, 'Rule ID: ' .. tostring(selectedRule.id));
 end
 
+local function render_live_encounter_tools()
+    local content = warn.encounterContent;
+    local showBumba = content == 'Odyssey' or warn.encounter.bumba.active;
+    local showAminon = content == 'Sortie' or warn.encounter.aminon.active;
+    local showCircles = content == 'Dynamis - Divergence' or warn.encounter.circles.active;
+    local now = os.clock();
+
+    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Live Encounter Tools');
+    if (not showBumba and not showAminon and not showCircles) then
+        text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
+            'Select Odyssey, Sortie, or Dynamis - Divergence to prepare its live tactical panel.');
+    end
+
+    if (showBumba) then
+        imgui.Separator();
+        imgui.TextColored({ 0.72, 0.88, 1.0, 1.0 }, 'Bumba - Element and Fetter Mode');
+        local elementIndex = 0;
+        local elementLabels = {};
+        for index, row in ipairs(encounterRuntime.bumba_elements) do
+            table.insert(elementLabels, row.label);
+            if row.id == warn.encounter.bumba.element then elementIndex = index - 1; end
+        end
+        local selectedElement = { elementIndex };
+        if (imgui.Combo('Absorbed Element##warn_bumba_element', selectedElement, table.concat(elementLabels, '\0') .. '\0\0')) then
+            local row = encounterRuntime.bumba_elements[selectedElement[1] + 1] or encounterRuntime.bumba_elements[1];
+            encounterRuntime.set_bumba_element(warn.encounter, row.id, now);
+            if (row.id ~= 'unknown') then
+                encounterRuntime.schedule_timer(warn.encounter, {
+                    id='bumba_element_shift', label='BUMBA ELEMENT CHECK', interval=60, prewarn=5,
+                    severity='danger', certainty='verified-cadence/manual-color',
+                    prewarn_message='BUMBA ELEMENT MAY SHIFT IN 5 SECONDS!\nWATCH THE DUST-CLOUD COLOR',
+                    due_message='BUMBA ELEMENT MAY SHIFT NOW!\nVERIFY THE DUST-CLOUD COLOR',
+                }, now);
+                trigger_context_rule({ id='__bumba_element', verified=true, severity='danger', prediction='reactive', sound='warning.wav' },
+                    'BUMBA ELEMENT', 'ABSORBING ' .. row.label:upper() .. '!\nAVOID ' .. row.label:upper() .. ' DAMAGE AND SKILLCHAINS');
+            end
+        end
+
+        local vengeanceIndex = 2;
+        local vengeanceLabels = {};
+        for index, row in ipairs(encounterRuntime.bumba_vengeance) do
+            table.insert(vengeanceLabels, row.label);
+            if row.id == warn.settings.context.bumba_vengeance then vengeanceIndex = index - 1; end
+        end
+        local selectedVengeance = { vengeanceIndex };
+        if (imgui.Combo('Vengeance##warn_bumba_vengeance', selectedVengeance, table.concat(vengeanceLabels, '\0') .. '\0\0')) then
+            local row = encounterRuntime.bumba_vengeance[selectedVengeance[1] + 1] or encounterRuntime.bumba_vengeance[3];
+            warn.settings.context.bumba_vengeance = row.id;
+            warn.encounter.bumba.vengeance = row.id;
+            save_settings();
+        end
+        if (imgui.Button('Start / Reset Fetter Timer##warn_bumba_start')) then
+            encounterRuntime.start_bumba(warn.encounter, warn.settings.context.bumba_vengeance, now);
+        end
+        imgui.SameLine();
+        if (imgui.Button('Clear Bumba State##warn_bumba_clear')) then
+            warn.encounter.bumba = encounterRuntime.new_state().bumba;
+            warn.encounter.timers.bumba_fetters = nil;
+            warn.encounter.timers.bumba_element_shift = nil;
+        end
+        text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
+            'Color remains manual until a stable packet signature is verified. The timer starts automatically on Bumba\'s first observed action or from the button above.');
+
+        if (warn.settings.context.encounter_diagnostics) then
+            imgui.TextColored({ 0.84, 0.70, 0.38, 1.0 }, 'Recent unique Bumba packet signatures');
+            if (#warn.encounter.diagnostics.bumba_packets == 0) then
+                imgui.TextColored({ 0.60, 0.62, 0.68, 1.0 }, 'No Bumba packets captured this session.');
+            else
+                for _, packet in ipairs(warn.encounter.diagnostics.bumba_packets) do
+                    imgui.Text(tostring(packet.signature));
+                end
+            end
+        end
+    end
+
+    if (showAminon) then
+        imgui.Separator();
+        imgui.TextColored({ 0.72, 0.88, 1.0, 1.0 }, 'Aminon - Elemental Response');
+        if (warn.encounter.aminon.active) then
+            local dt, age = encounterRuntime.aminon_dt_estimate(warn.encounter, now);
+            imgui.Text(string.format('Mode: %s   Response: %s   Age: %s',
+                tostring(warn.encounter.aminon.mode):upper(), tostring(warn.encounter.aminon.response):upper(), format_seconds(age)));
+            if (warn.encounter.aminon.proc_confirmed) then
+                imgui.TextColored({ 0.55, 1.0, 0.60, 1.0 }, 'Proc confirmed manually - current-mode DT growth stopped.');
+            else
+                imgui.TextColored({ 1.0, 0.72, 0.25, 1.0 }, string.format('Current mode may have added approximately %d%% DT.', dt));
+            end
+            if (imgui.Button('Mark Proc Confirmed##warn_aminon_proc')) then encounterRuntime.mark_aminon_proc(warn.encounter, now); end
+            imgui.SameLine();
+            if (imgui.Button('Clear Aminon State##warn_aminon_clear')) then warn.encounter.aminon = encounterRuntime.new_state().aminon; end
+        else
+            imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 }, 'Waiting for an Aminon elemental TP move.');
+        end
+        text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
+            'Warn does not claim five-hit proc progress yet; completion evidence is not exposed reliably enough by the current parser.');
+    end
+
+    if (showCircles) then
+        imgui.Separator();
+        imgui.TextColored({ 0.72, 0.88, 1.0, 1.0 }, 'Divergence - Elemental Circles');
+        local circles = warn.encounter.circles;
+        if (circles.reliable) then
+            local dt = encounterRuntime.circle_damage_reduction(warn.encounter);
+            imgui.Text(string.format('%d / 8 cleared   |   %d alive   |   boss DT approximately -%d%%',
+                circles.cleared or 0, circles.alive or 0, dt or 0));
+        elseif (circles.active) then
+            imgui.Text(string.format('%d Circle entities currently observed; full-zone count is not yet certain.', circles.alive or 0));
+        else
+            imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 }, 'Waiting for Wave 3 Elemental Circles.');
+        end
+        text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
+            'Element identities remain unresolved because every object is named Elemental Circle. Warn will not invent an elemental assignment.');
+    end
+
+    local timerRows = encounterRuntime.timer_rows(warn.encounter, now);
+    if (#timerRows > 0) then
+        imgui.Separator();
+        imgui.TextColored({ 0.84, 0.70, 0.38, 1.0 }, 'Verified Timers');
+        for _, timer in ipairs(timerRows) do
+            local value = timer.remaining > 0 and format_seconds(timer.remaining) or 'DUE - awaiting observed reset';
+            imgui.Text(tostring(timer.label) .. ': ' .. value);
+        end
+    end
+end
+
 function render_context_tab()
     ensure_context_settings();
     ensure_rule_settings();
@@ -4121,6 +4447,8 @@ function render_context_tab()
     render_rule_detail(selectedRule);
     imgui.EndChild();
 
+    imgui.Separator();
+    render_live_encounter_tools();
     imgui.Separator();
     if (imgui.CollapsingHeader('Custom Watches (Advanced)', 0)) then
         render_abilities_tab(true);
@@ -4805,6 +5133,8 @@ local function render_alert_options()
         { key = 'enabled', label = 'Enable Verified Encounter Alerts', help = 'Only verified database rules create contextual alerts.' },
         { key = 'job_counters', label = 'Show Assigned Action Instructions', help = 'Requires both an enabled role or assignment and a capability Ashita confirms is usable.' },
         { key = 'packet_recognition', label = 'Use Passive Packet Recognition', help = 'Reads incoming actions for faster reaction; never modifies, blocks or injects packets.' },
+        { key = 'encounter_hud', label = 'Show Compact Live Tactical HUD', help = 'Appears only while supported encounter modes, timers, or objectives are active.' },
+        { key = 'encounter_diagnostics', label = 'Capture Bumba Packet Diagnostics', help = 'Keeps the 12 most recent unique Bumba action signatures in memory for retail verification; nothing is uploaded.' },
         { key = 'state_triggers', label = 'Enable Encounter State Triggers', help = 'Allows verified movement, presence and maintained-state mechanics.' },
         { key = 'contextual_sounds', label = 'Use Contextual / Per-Alert Sounds', help = 'When disabled, every encounter alert uses the global sound.' },
     };
@@ -5688,12 +6018,15 @@ ashita.events.register('packet_in', 'packet_in_cb', function (e)
         warn.debuffs.next_scan = 0;
         warn.timerLearning.active_timers = {};
         warn.reactive.recent = {};
+        warn.encounter = encounterRuntime.new_state();
     end
 end);
 
 ashita.events.register('d3d_present', 'present_cb', function ()
     update_debuff_mob_cache(false);
     update_state_rules();
+    update_divergence_circle_state();
+    update_verified_encounter_timers();
     process_debuff_estimates();
     process_deferred_debuff_losses();
     flush_debuff_loss_batch();
@@ -5702,5 +6035,6 @@ ashita.events.register('d3d_present', 'present_cb', function ()
     render_launcher();
     render_config_window();
     render_overlay();
+    render_encounter_hud();
     render_critical_debuff_alert();
 end);

@@ -33,5 +33,7 @@ assert_equal(rules.sortie_degei_fire_mode.event, 'uses', 'Degei mode transition 
 assert_equal(rules.sortie_aita_vivisection.severity, 'critical', 'Aita Vivisection severity');
 assert_equal(rules.sortie_aminon_wind_mode.message, 'WIND MODE!\nPROC WITH ICE DAMAGE', 'Aminon wind response');
 assert_equal(rules.sortie_dhartok_water_absorb.type, 'entity_present', 'Dhartok water warning type');
+assert_equal(rules.sortie_aminon_bane_tartarus.timer.interval, 240, 'Aminon Bane verified interval');
+assert_equal(rules.sortie_aminon_fire_mode.mode.response, 'water', 'Aminon fire response runtime metadata');
 
 print('sortie_spec: all checks passed');

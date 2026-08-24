@@ -22,7 +22,7 @@ local modules = {
 };
 
 local result = {
-    version = 12,
+    version = 13,
     ability_rules = {},
     state_rules = {},
     catalog = {},

@@ -30,6 +30,7 @@ warn/
     debuffs.lua
     json.lua
     mechanics.lua
+    encounter_runtime.lua
     sha256.lua
     timer_learning.lua
     rules.lua
@@ -164,11 +165,32 @@ Current shipped rules are a verified starter set, not a claim of complete FFXI c
 Rules should preserve source/provenance metadata and should not guess whether a move is
 stunnable, silenceable, avoidable, etc.
 
-The v2.8 bundled database contains **442 ability/spell rules, 24 encounter-state rules, and
+The v2.9 bundled database contains **443 ability/spell rules, 24 encounter-state rules, and
 430 indexed encounter entries**. Historical Ambuscade Volume 2 has 54 actionable families out
 of 67 indexed families. All 30 indexed HTMB categories have direct rules or inherited actor rules,
 and all 85 encounters on the Geas Fete Aeonic route are indexed. Sortie includes all 17 named
 sector NMs and bosses. Odyssey includes 67 named Sheol/Gaol NMs plus the shared Mimic hazard.
+
+## v2.9 live tactical state
+
+Warn now preserves packet target identity for contextual alerts. Ou's Target warning names the
+affected player when the incoming action packet exposes that target, and its previously missing
+65% Chainspell event is included.
+
+Verified encounter timers are separate from learned readiness estimates. Aminon's observed Bane
+of Tartarus starts a documented four-minute timer with a 15-second prewarning; its six elemental
+modes populate a compact tactical HUD with the correct response, mode age, and a clearly labeled
+current-mode damage-reduction estimate. Proc completion remains manual until packet evidence is
+reliable enough to avoid false progress.
+
+Bumba has a Vengeance-aware fetter timer, manual absorbed-element selector, 60-second element-check
+cue, and an opt-in in-memory packet signature recorder for future automatic dust-color validation.
+The manual selector is the authoritative fallback until a stable retail signature is verified.
+
+Dynamis - Divergence now counts live Elemental Circle entities. It reports cleared progress and the
+corresponding Disjoined-boss damage reduction only after all eight Circles have been observed;
+partial entity visibility is labeled uncertain instead of being converted into a false clear count.
+The compact HUD is optional, positionable, and has independent opacity under Appearance.
 
 ## v2.8 Skirmish, Unity Wanted, and Vagary
 
