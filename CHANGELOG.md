@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.0.8
+- Fixed Encounter Intelligence centering by measuring against each active ImGui child window's real screen position and width instead of the unreliable content-region wrapper and its 800-pixel fallback.
+- Allowed the Encounter Intelligence scroll pane to fill the dashboard content region and reduced only the non-scrolling outer dashboard reserve, moving its scrollbar substantially farther right while preserving the 42/56-pixel separation between nested browser scrollbars.
+
+## 3.0.7
+- Rebuilt the Encounters dashboard around the approved edited mockup: centered three-line header hierarchy, centered main tabs, and centered Encounter Intelligence copy.
+- Reworked Current Encounter into a taller non-nested-scroll summary with centered encounter state and a shared lower-right Auto Detect / Choose Manually action row.
+- Moved Collapse All, Expand All, and Show Indexed-Only Groups into the lower-right footer of the encounter browser.
+- Moved encounter search beneath the complete browser window, immediately above Live Encounter Tools.
+- Added a bordered browser shell and a larger visual gap between the category and mechanic panes while retaining the expanded scrollbar gutters from v3.0.6.
+
 ## 3.0.6
 - Rebuilt the potion and harp textures with genuine full-canvas alpha instead of a partially transparent image-generation checkerboard, so all four Roles icons now render without square backgrounds in Ashita.
 - Increased the minimum scrollbar gutter from roughly 14 pixels at 1080p to 42 pixels and applied it consistently to the current-encounter panel, manual results, encounter browser, rule list, and dashboard content layers.

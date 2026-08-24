@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '3.0.6';
+addon.version   = '3.0.8';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -4729,36 +4729,51 @@ function guiOps.text_colored_wrapped(color, value)
     imgui.PopStyleColor();
 end
 
+function guiOps.measure_text_width(value)
+    if (type(imgui.CalcTextSize) == 'function') then
+        local ok, measured = pcall(imgui.CalcTextSize, tostring(value or ''));
+        if (ok and measured ~= nil) then
+            local indexedOk, indexedWidth = pcall(function () return tonumber(measured[1]); end);
+            if (indexedOk and indexedWidth ~= nil) then return indexedWidth; end
+            local namedOk, namedWidth = pcall(function () return tonumber(measured.x); end);
+            if (namedOk and namedWidth ~= nil) then return namedWidth; end
+        end
+    end
+    return #tostring(value or '') * 8 * get_ui_scale();
+end
+
+function guiOps.centered_text_colored(color, value)
+    local windowX = imgui.GetWindowPos();
+    local windowWidth = imgui.GetWindowSize();
+    local cursorX, cursorY = imgui.GetCursorScreenPos();
+    local width = guiOps.measure_text_width(value);
+    imgui.SetCursorScreenPos({ windowX + math.max(0, (windowWidth - width) * 0.5), cursorY });
+    imgui.TextColored(color, tostring(value or ''));
+end
+
 function guiOps.render_current_encounter_panel()
+    local scale = get_ui_scale();
     local state = warn.activeEncounter.state;
     local profile = warn.activeEncounter.engine.get_profile(warn.activeEncounter.index, state);
     local manualOpen = warn.manualEncounterOpen[1] == true;
     local profileRuleCount = profile ~= nil and #guiOps.get_active_profile_rules(4) or 0;
     local profileCounterCount = profile ~= nil and #guiOps.get_active_counter_labels(3) or 0;
-    local profileHeight = 170 + (profileRuleCount * 22) + (profileCounterCount > 0 and 22 or 0);
-    local panelHeight = profile ~= nil and profileHeight or 145;
-    if (#(state.candidates or {}) > 0 and profile == nil) then panelHeight = 190; end
-    if (manualOpen) then panelHeight = panelHeight + 155; end
+    local profileHeight = 205 + (profileRuleCount * 22) + (profileCounterCount > 0 and 22 or 0);
+    local panelHeight = profile ~= nil and profileHeight or 170;
+    if (#(state.candidates or {}) > 0 and profile == nil) then panelHeight = 215; end
+    if (manualOpen) then panelHeight = panelHeight + 175; end
 
-    local scrollGutter = math.max(42, 56 * get_ui_scale());
-    imgui.BeginChild('warn_current_encounter', { -scrollGutter, panelHeight }, ImGuiChildFlags_Borders);
-    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Current Encounter');
-    imgui.SameLine();
-    if (imgui.Checkbox('Auto Detect##warn_encounter_auto', { warn.settings.context.encounter_detection })) then
-        warn.settings.context.encounter_detection = not warn.settings.context.encounter_detection;
-        if (not warn.settings.context.encounter_detection and not state.manual) then
-            warn.activeEncounter.engine.clear(state, 'automatic detection disabled', os.clock());
-            warn.encounter = encounterRuntime.new_state();
-        end
-        save_settings();
-    end
+    imgui.BeginChild('warn_current_encounter', { 0, panelHeight }, ImGuiChildFlags_Borders);
+    local panelX, panelY = imgui.GetWindowPos();
+    local panelWidth, panelChildHeight = imgui.GetWindowSize();
+    guiOps.centered_text_colored({ 1.0, 0.88, 0.35, 1.0 }, 'Current Encounter');
 
     if (profile ~= nil) then
         local confidence = state.manual and 'MANUAL' or
             (state.confidence == 'confirmed' and 'AUTO / CONFIRMED' or 'AUTO / NEARBY');
-        imgui.TextColored({ 0.96, 0.78, 0.32, 1.0 }, profile.encounter);
-        imgui.SameLine();
-        imgui.TextColored(state.confidence == 'confirmed' and { 0.55, 1.0, 0.60, 1.0 } or { 0.72, 0.82, 0.94, 1.0 }, confidence);
+        guiOps.centered_text_colored({ 0.96, 0.78, 0.32, 1.0 }, profile.encounter);
+        guiOps.centered_text_colored(state.confidence == 'confirmed' and { 0.55, 1.0, 0.60, 1.0 }
+            or { 0.72, 0.82, 0.94, 1.0 }, confidence);
         guiOps.text_colored_wrapped({ 0.66, 0.74, 0.86, 1.0 }, profile.content .. ' / ' .. profile.group ..
             (state.actor ~= nil and ('   Evidence: ' .. tostring(state.actor)) or ''));
 
@@ -4792,7 +4807,8 @@ function guiOps.render_current_encounter_panel()
             warn.encounter = encounterRuntime.new_state();
         end
     elseif (#(state.candidates or {}) > 0) then
-        imgui.TextColored({ 1.0, 0.72, 0.25, 1.0 }, 'Multiple verified encounters match the current evidence.');
+        guiOps.centered_text_colored({ 1.0, 0.72, 0.25, 1.0 },
+            'Multiple verified encounters match the current evidence.');
         guiOps.text_colored_wrapped({ 0.66, 0.74, 0.86, 1.0 }, 'Warn will not guess. Choose the encounter manually or wait for a unique action.');
         for index = 1, math.min(#state.candidates, 4) do
             local candidate = warn.activeEncounter.index.profiles[state.candidates[index]];
@@ -4803,21 +4819,16 @@ function guiOps.render_current_encounter_panel()
             if (index < math.min(#state.candidates, 4)) then imgui.SameLine(); end
         end
     else
-        imgui.TextColored({ 0.72, 0.82, 0.94, 1.0 }, 'No active encounter detected.');
+        guiOps.centered_text_colored({ 0.72, 0.82, 0.94, 1.0 }, 'No active encounter detected.');
         guiOps.text_colored_wrapped({ 0.62, 0.68, 0.76, 1.0 },
             'Warn activates from a verified boss entity or action. Unknown abilities continue into Learning without producing alerts.');
     end
 
-    if (imgui.Button((manualOpen and 'Hide Manual Selection' or 'Choose Manually') .. '##warn_manual_toggle')) then
-        warn.manualEncounterOpen[1] = not manualOpen;
-        manualOpen = not manualOpen;
-    end
     if (manualOpen) then
-        imgui.SameLine();
         if (type(imgui.PushItemWidth) == 'function') then imgui.PushItemWidth(-1); end
         imgui.InputText('##warn_manual_encounter_search', warn.manualEncounterSearch, 255);
         if (type(imgui.PopItemWidth) == 'function') then imgui.PopItemWidth(); end
-        imgui.BeginChild('warn_manual_encounter_results', { -scrollGutter, 125 }, ImGuiChildFlags_Borders);
+        imgui.BeginChild('warn_manual_encounter_results', { 0, 125 }, ImGuiChildFlags_Borders);
         local term = warn.manualEncounterSearch[1] or '';
         for _, candidate in ipairs(warn.activeEncounter.engine.search(warn.activeEncounter.index, term, 15)) do
             local verifiedCount = #(candidate.rules or {});
@@ -4830,6 +4841,25 @@ function guiOps.render_current_encounter_panel()
             end
         end
         imgui.EndChild();
+    end
+
+    local actionCursorX, actionCursorY = imgui.GetCursorScreenPos();
+    local actionWidth = 292 * scale;
+    local actionX = panelX + math.max(12 * scale, panelWidth - actionWidth - (12 * scale));
+    local actionY = math.max(actionCursorY + (8 * scale), panelY + panelChildHeight - (43 * scale));
+    imgui.SetCursorScreenPos({ actionX, actionY });
+    if (imgui.Checkbox('Auto Detect##warn_encounter_auto', { warn.settings.context.encounter_detection })) then
+        warn.settings.context.encounter_detection = not warn.settings.context.encounter_detection;
+        if (not warn.settings.context.encounter_detection and not state.manual) then
+            warn.activeEncounter.engine.clear(state, 'automatic detection disabled', os.clock());
+            warn.encounter = encounterRuntime.new_state();
+        end
+        save_settings();
+    end
+    imgui.SameLine();
+    if (imgui.Button((manualOpen and 'Hide Manual Selection' or 'Choose Manually') ..
+        '##warn_manual_toggle', { 154 * scale, 0 })) then
+        warn.manualEncounterOpen[1] = not manualOpen;
     end
     imgui.EndChild();
 end
@@ -5062,43 +5092,24 @@ function render_context_tab()
     ensure_rule_settings();
     ensure_ui_settings();
     local uiSettings = warn.settings.ui;
-    local scrollGutter = math.max(42, 56 * get_ui_scale());
-    imgui.BeginChild('warn_encounters_scroll', { -scrollGutter, 0 }, 0);
-    imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Encounter Intelligence');
-    guiOps.text_colored_wrapped({ 0.70, 0.78, 0.88, 1.0 },
-        'Browse verified mechanics. Unknown observations enter Learning and never alert unless you explicitly Custom Watch them.');
+    local scale = get_ui_scale();
+    local scrollGutter = math.max(42, 56 * scale);
+    imgui.BeginChild('warn_encounters_scroll', { 0, 0 }, 0);
+    guiOps.centered_text_colored({ 1.0, 0.88, 0.35, 1.0 }, 'Encounter Intelligence');
+    guiOps.centered_text_colored({ 0.70, 0.78, 0.88, 1.0 },
+        'Browse verified mechanics. Unknown observations enter Learning and never alert unless explicitly');
+    guiOps.centered_text_colored({ 0.70, 0.78, 0.88, 1.0 }, 'watched.');
     guiOps.render_current_encounter_panel();
-    imgui.Separator();
-    imgui.TextColored({ 0.72, 0.78, 0.86, 1.0 }, 'Search encounter alerts');
-    if (type(imgui.PushItemWidth) == 'function') then imgui.PushItemWidth(-1); end
-    imgui.InputText('##warn_encounter_search', warn.ruleSearch, 255);
-    if (type(imgui.PopItemWidth) == 'function') then imgui.PopItemWidth(); end
+    imgui.Spacing();
+    imgui.Spacing();
 
     local categories = guiOps.get_encounter_categories();
     local allRules = get_all_context_rules();
 
-    if (imgui.Button('Collapse All##warn_categories_collapse')) then
-        for _, category in ipairs(categories) do uiSettings.encounter_collapsed[category.content] = true; end
-        save_settings();
-    end
-    imgui.SameLine();
-    if (imgui.Button('Expand All##warn_categories_expand')) then
-        for _, category in ipairs(categories) do uiSettings.encounter_collapsed[category.content] = false; end
-        save_settings();
-    end
-    imgui.SameLine();
-    if (imgui.Checkbox('Show Indexed-Only Groups##warn_show_indexed', { uiSettings.show_indexed_only })) then
-        uiSettings.show_indexed_only = not uiSettings.show_indexed_only;
-        if (not uiSettings.show_indexed_only) then
-            local selectedGroup = encounterBrowser.find_group(categories, warn.encounterContent, warn.encounterGroup);
-            if (selectedGroup ~= nil and (selectedGroup.rule_count or 0) == 0) then warn.encounterGroup = nil; end
-        end
-        save_settings();
-    end
-
     local availableWidth = guiOps.get_available_content_width(900);
-    local categoryWidth = math.max(220, math.min(340, availableWidth * 0.34));
-    imgui.BeginChild('warn_encounter_categories', { categoryWidth, 410 }, ImGuiChildFlags_Borders);
+    local categoryWidth = math.max(220, math.min(340, availableWidth * 0.29));
+    imgui.BeginChild('warn_encounter_browser_shell', { -scrollGutter, 410 }, ImGuiChildFlags_Borders);
+    imgui.BeginChild('warn_encounter_categories', { categoryWidth, 0 }, ImGuiChildFlags_Borders);
     if (imgui.Selectable('All Encounters', warn.encounterContent == nil)) then
         warn.encounterContent = nil; warn.encounterGroup = nil;
     end
@@ -5128,8 +5139,11 @@ function render_context_tab()
     end
     imgui.EndChild();
     imgui.SameLine();
+    imgui.SetCursorPosX(imgui.GetCursorPosX() + (34 * scale));
 
-    imgui.BeginChild('warn_encounter_browser', { -scrollGutter, 410 }, ImGuiChildFlags_Borders);
+    imgui.BeginChild('warn_encounter_browser', { -scrollGutter, 0 }, ImGuiChildFlags_Borders);
+    local browserX, browserY = imgui.GetWindowPos();
+    local browserWidth, browserHeight = imgui.GetWindowSize();
     local searchTerm = warn.ruleSearch[1] ~= nil and warn.ruleSearch[1]:lower() or '';
     local visibleRules = {};
     for _, rule in ipairs(allRules) do
@@ -5169,8 +5183,37 @@ function render_context_tab()
     end
     if (not selectedVisible) then selectedRule = visibleRules[1]; warn.selectedRuleId = selectedRule and selectedRule.id or nil; end
     guiOps.render_rule_detail(selectedRule);
+
+    local footerCursorX, footerCursorY = imgui.GetCursorScreenPos();
+    local footerWidth = 462 * scale;
+    local footerX = browserX + math.max(12 * scale, browserWidth - scrollGutter - footerWidth);
+    local footerY = math.max(footerCursorY + (8 * scale), browserY + browserHeight - (43 * scale));
+    imgui.SetCursorScreenPos({ footerX, footerY });
+    if (imgui.Checkbox('Show Indexed-Only Groups##warn_show_indexed', { uiSettings.show_indexed_only })) then
+        uiSettings.show_indexed_only = not uiSettings.show_indexed_only;
+        if (not uiSettings.show_indexed_only) then
+            local selectedGroup = encounterBrowser.find_group(categories, warn.encounterContent, warn.encounterGroup);
+            if (selectedGroup ~= nil and (selectedGroup.rule_count or 0) == 0) then warn.encounterGroup = nil; end
+        end
+        save_settings();
+    end
+    imgui.SameLine();
+    if (imgui.Button('Collapse All##warn_categories_collapse', { 112 * scale, 0 })) then
+        for _, category in ipairs(categories) do uiSettings.encounter_collapsed[category.content] = true; end
+        save_settings();
+    end
+    imgui.SameLine();
+    if (imgui.Button('Expand All##warn_categories_expand', { 104 * scale, 0 })) then
+        for _, category in ipairs(categories) do uiSettings.encounter_collapsed[category.content] = false; end
+        save_settings();
+    end
+    imgui.EndChild();
     imgui.EndChild();
 
+    imgui.TextColored({ 0.72, 0.78, 0.86, 1.0 }, 'Search encounter alerts');
+    if (type(imgui.PushItemWidth) == 'function') then imgui.PushItemWidth(-1); end
+    imgui.InputText('##warn_encounter_search', warn.ruleSearch, 255);
+    if (type(imgui.PopItemWidth) == 'function') then imgui.PopItemWidth(); end
     imgui.Separator();
     guiOps.render_live_encounter_tools();
     imgui.Separator();
@@ -6179,19 +6222,6 @@ function render_config_window()
         draw:AddLine({ window_x + window_width - 7 * scale, window_y + 7 * scale },
             { window_x + window_width - 7 * scale, window_y + corner }, dim, 2 * scale);
 
-        local function measure_text_width(value)
-            if (type(imgui.CalcTextSize) == 'function') then
-                local ok, measured = pcall(imgui.CalcTextSize, tostring(value or ''));
-                if (ok and measured ~= nil) then
-                    local numericOk, numericWidth = pcall(function () return tonumber(measured[1]); end);
-                    if (numericOk and numericWidth ~= nil) then return numericWidth; end
-                    local namedOk, namedWidth = pcall(function () return tonumber(measured.x); end);
-                    if (namedOk and namedWidth ~= nil) then return namedWidth; end
-                end
-            end
-            return #tostring(value or '') * 8 * scale;
-        end
-
         local pointer = uiTextures.pointer(warn.ui.launcher_texture);
         if (pointer ~= nil) then
             imgui.Image(pointer, { 44 * scale, 44 * scale }, { 0, 0 }, { 1, 1 });
@@ -6199,15 +6229,21 @@ function render_config_window()
         end
         local headerTitle = 'WARN';
         local headerSubtitle = 'VANA\'DIEL TACTICAL ENCOUNTER ASSISTANT';
-        local headerWidth = math.max(measure_text_width(headerTitle), measure_text_width(headerSubtitle));
+        local headerContext = warn.mainTab[1] == 1 and 'Verified encounter intelligence and custom watches'
+            or 'Roles, learning, alerts, appearance, and sound';
+        local headerWidth = math.max(guiOps.measure_text_width(headerTitle),
+            guiOps.measure_text_width(headerSubtitle), guiOps.measure_text_width(headerContext));
         local headerLeft = math.max(imgui.GetCursorPosX(), (window_width - headerWidth) * 0.5);
         imgui.BeginGroup();
         set_ui_font_scale(1.28 * scale);
-        imgui.SetCursorPosX(headerLeft + math.max(0, (headerWidth - measure_text_width(headerTitle)) * 0.5));
+        imgui.SetCursorPosX(headerLeft + math.max(0, (headerWidth - guiOps.measure_text_width(headerTitle)) * 0.5));
         imgui.TextColored(warn.ui.theme.brass_hover, headerTitle);
         set_ui_font_scale(0.82 * scale);
-        imgui.SetCursorPosX(headerLeft);
+        imgui.SetCursorPosX(headerLeft + math.max(0, (headerWidth - guiOps.measure_text_width(headerSubtitle)) * 0.5));
         imgui.TextColored(warn.ui.theme.text_muted, headerSubtitle);
+        set_ui_font_scale(0.76 * scale);
+        imgui.SetCursorPosX(headerLeft + math.max(0, (headerWidth - guiOps.measure_text_width(headerContext)) * 0.5));
+        imgui.TextColored(warn.ui.theme.text_muted, headerContext);
         set_ui_font_scale(1.0);
         imgui.EndGroup();
         imgui.SameLine();
@@ -6216,6 +6252,8 @@ function render_config_window()
 
         imgui.Separator();
         local tab_width = 172 * scale;
+        local tabsWidth = (tab_width * 2) + (8 * scale);
+        imgui.SetCursorPosX(math.max(imgui.GetCursorPosX(), (window_width - tabsWidth) * 0.5));
         if (warn.mainTab[1] == 1) then imgui.PushStyleColor(ImGuiCol_Button, warn.ui.theme.selected); end
         if (imgui.Button('ENCOUNTERS##warn_main_encounters', { tab_width, 34 * scale })) then warn.mainTab[1] = 1; end
         if (warn.mainTab[1] == 1) then imgui.PopStyleColor(); end
@@ -6223,18 +6261,9 @@ function render_config_window()
         if (warn.mainTab[1] == 2) then imgui.PushStyleColor(ImGuiCol_Button, warn.ui.theme.selected); end
         if (imgui.Button('OPTIONS##warn_main_options', { tab_width, 34 * scale })) then warn.mainTab[1] = 2; end
         if (warn.mainTab[1] == 2) then imgui.PopStyleColor(); end
-        imgui.SameLine();
-        local tabDescription = warn.mainTab[1] == 1 and 'Verified encounter intelligence and custom watches'
-            or 'Roles, learning, alerts, appearance, and sound';
-        local descriptionStart = imgui.GetCursorPosX();
-        local descriptionWidth = measure_text_width(tabDescription);
-        local centeredDescriptionX = descriptionStart + math.max(0,
-            (window_width - descriptionStart - 18 * scale - descriptionWidth) * 0.5);
-        imgui.SetCursorPosX(centeredDescriptionX);
-        imgui.TextColored(warn.ui.theme.text_muted, tabDescription);
         imgui.Separator();
 
-        local mainScrollGutter = math.max(42, 56 * scale);
+        local mainScrollGutter = math.max(18, 24 * scale);
         imgui.BeginChild('warn_main_content', { -mainScrollGutter, -28 * scale }, 0);
         if (warn.mainTab[1] == 1) then render_context_tab(); else render_options_tab(); end
         imgui.EndChild();
