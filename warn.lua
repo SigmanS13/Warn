@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '3.0.2';
+addon.version   = '3.0.3';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -49,7 +49,7 @@ local encounterBrowser = require('ui.encounter_browser');
 local encounterRuntime = require('data.encounter_runtime');
 local activeEncounter = require('data.active_encounter');
 local alertGuard = require('data.alert_guard');
-local sessionSound = require('data.session_sound');
+local soundRuntime = require('data.sound_runtime');
 
 local spellElementNames = {
     [0]='fire', [1]='ice', [2]='wind', [3]='earth', [4]='thunder', [5]='water', [6]='light', [7]='dark',
@@ -3739,105 +3739,11 @@ end
 -- Sound
 --------------------------------------------------------------------------------------------------
 
--- Use the Windows multimedia API directly instead of relying on unverified Ashita sound helpers.
--- Ashita v4 runs under LuaJIT on Windows, so FFI is available.
-ffi.cdef[[
-    int __stdcall PlaySoundA(const char* pszSound, void* hmod, unsigned int fdwSound);
-    void* __stdcall FindFirstFileA(const char* lpFileName, void* lpFindFileData);
-    int __stdcall FindNextFileA(void* hFindFile, void* lpFindFileData);
-    int __stdcall FindClose(void* hFindFile);
-    typedef struct { unsigned long low; unsigned long high; } WARN_FILETIME;
-    void* __stdcall GetCurrentProcess(void);
-    unsigned long __stdcall GetCurrentProcessId(void);
-    int __stdcall GetProcessTimes(void* process, WARN_FILETIME* created,
-        WARN_FILETIME* exited, WARN_FILETIME* kernel, WARN_FILETIME* user);
-]]
-
-local winmm = nil;
-local kernel32 = nil;
-pcall(function ()
-    winmm = ffi.load('winmm');
-end);
-pcall(function ()
-    kernel32 = ffi.load('kernel32');
-end);
-
-local SND_ASYNC     = 0x0001;
-local SND_NODEFAULT = 0x0002;
-local SND_FILENAME  = 0x00020000;
-local FILE_ATTRIBUTE_DIRECTORY = 0x00000010;
-local WIN32_FIND_DATAA_SIZE = 320;
-local WIN32_FIND_DATAA_FILENAME_OFFSET = 44;
-
-local function add_sound_if_valid(files, seen, name)
-    if (name == nil or name == '' or name == '.' or name == '..') then
-        return;
-    end
-
-    local lower = name:lower();
-    if (not lower:match('%.wav$')) then
-        return;
-    end
-    if (seen[lower]) then
-        return;
-    end
-
-    seen[lower] = true;
-    table.insert(files, name);
-end
+-- Native playback, WAV discovery, and process-session detection live in a
+-- separate module so Warn's main Ashita chunk stays well below LuaJIT's local limit.
 
 function get_sound_files()
-    local files = {};
-    local seen = {};
-
-    -- Enumerate every WAV file in the addon's sounds folder using the Windows API.
-    -- This keeps custom sounds completely data-driven; no Lua edits are needed.
-    if (kernel32 ~= nil) then
-        local data = ffi.new('uint8_t[?]', WIN32_FIND_DATAA_SIZE);
-        local pattern = addon.path .. '\\sounds\\*.wav';
-        local handle = kernel32.FindFirstFileA(pattern, data);
-        local invalidHandle = ffi.cast('void*', -1);
-
-        if (handle ~= invalidHandle) then
-            while (true) do
-                local attributes = ffi.cast('uint32_t*', data)[0];
-                if (bit.band(attributes, FILE_ATTRIBUTE_DIRECTORY) == 0) then
-                    local namePtr = ffi.cast('char*', data) + WIN32_FIND_DATAA_FILENAME_OFFSET;
-                    add_sound_if_valid(files, seen, ffi.string(namePtr));
-                end
-
-                if (kernel32.FindNextFileA(handle, data) == 0) then
-                    break
-                end
-            end
-            kernel32.FindClose(handle);
-        end
-    end
-
-    -- If directory enumeration is unavailable for any reason, preserve the bundled
-    -- files as a safe fallback when they actually exist.
-    if (#files == 0) then
-        local fallback = { 'msg.wav', 'beep.wav', 'alert.wav', 'warning.wav', 'alarm.wav',
-            'firstopen.wav', 'healme.wav', 'celebrate.wav', 'leave.wav', 'rrun.wav',
-            'Fly you fools!.wav', 'Kefka.wav', 'Run away.wav' };
-        for _, name in ipairs(fallback) do
-            local f = io.open(addon.path .. '\\sounds\\' .. name, 'rb');
-            if (f ~= nil) then
-                f:close();
-                add_sound_if_valid(files, seen, name);
-            end
-        end
-    end
-
-    table.sort(files, function (a, b)
-        return a:lower() < b:lower();
-    end);
-
-    local result = T{ 'None' };
-    for _, name in ipairs(files) do
-        table.insert(result, name);
-    end
-    return result;
+    return T(soundRuntime.get_files(addon.path));
 end
 
 function refresh_sound_files(announce)
@@ -3885,29 +3791,9 @@ function refresh_sound_files(announce)
 end
 
 function play_sound_file(sel)
-    if (sel == nil or sel == 'None' or sel == '') then
-        return;
-    end
-
-    if (winmm == nil) then
-        print(chat.header(addon.name):append(chat.error('Sound playback is unavailable (winmm.dll could not be loaded).')));
-        return;
-    end
-
-    local path = addon.path .. '\\sounds\\' .. sel;
-    local f = io.open(path, 'rb');
-    if (f == nil) then
-        print(chat.header(addon.name):append(chat.error('Sound file not found: ')):append(chat.warning(sel)));
-        return;
-    end
-    f:close();
-
-    local ok, result = pcall(function ()
-        return winmm.PlaySoundA(path, nil, bit.bor(SND_FILENAME, SND_ASYNC, SND_NODEFAULT));
-    end);
-
-    if (not ok or result == 0) then
-        print(chat.header(addon.name):append(chat.error('Failed to play sound: ')):append(chat.warning(sel)));
+    local ok, err = soundRuntime.play(addon.path, sel);
+    if (not ok) then
+        print(chat.header(addon.name):append(chat.error(tostring(err))));
     end
 end
 
@@ -3915,31 +3801,10 @@ function play_selected_sound()
     play_sound_file(warn.settings.sound.selected);
 end
 
-local function get_game_session_marker()
-    if (kernel32 == nil) then return 'warn-runtime'; end
-
-    local ok, marker = pcall(function ()
-        local processId = tonumber(kernel32.GetCurrentProcessId()) or 0;
-        local created = ffi.new('WARN_FILETIME[1]');
-        local exited = ffi.new('WARN_FILETIME[1]');
-        local kernelTime = ffi.new('WARN_FILETIME[1]');
-        local userTime = ffi.new('WARN_FILETIME[1]');
-        local result = kernel32.GetProcessTimes(kernel32.GetCurrentProcess(), created, exited, kernelTime, userTime);
-        if (result ~= 0) then
-            return string.format('%u:%u:%u', processId,
-                tonumber(created[0].high) or 0, tonumber(created[0].low) or 0);
-        end
-        return string.format('%u', processId);
-    end);
-    if (ok and marker ~= nil and marker ~= '') then return marker; end
-    return 'warn-runtime';
-end
-
 local function play_first_gui_open_sound_once()
     ensure_sound_settings();
     local cfg = warn.settings.sound;
-    local marker = get_game_session_marker();
-    local shouldPlay, filename, consumed = sessionSound.consume(cfg, marker);
+    local shouldPlay, filename, consumed = soundRuntime.consume_first_open(cfg);
     -- Save before attempting playback so a missing or invalid file cannot cause
     -- repeated sound attempts every time the window is reopened.
     if (consumed) then save_settings(); end
@@ -4796,7 +4661,9 @@ end
 -- GUI: Context tab
 --------------------------------------------------------------------------------------------------
 
-local function get_rule_group(rule)
+local guiOps = {};
+
+function guiOps.get_rule_group(rule)
     if (rule.group ~= nil and tostring(rule.group) ~= '') then return tostring(rule.group); end
     local encounter = tostring(rule.encounter or '');
     for _, entry in ipairs(warn.rules.catalog or {}) do
@@ -4807,17 +4674,17 @@ local function get_rule_group(rule)
     return 'General';
 end
 
-local encounterSeverityRank = { critical=1, danger=2, important=3 };
+guiOps.encounterSeverityRank = { critical=1, danger=2, important=3 };
 
-local function get_active_profile_rules(limit)
+function guiOps.get_active_profile_rules(limit)
     local rows = {};
     for _, rule in ipairs(warn.activeEncounter.engine.rules_for_active(
         warn.activeEncounter.index, warn.activeEncounter.state)) do
         if (rule.verified == true and is_rule_enabled(rule)) then table.insert(rows, rule); end
     end
     table.sort(rows, function(a, b)
-        local ar = encounterSeverityRank[tostring(a.severity or 'important'):lower()] or 4;
-        local br = encounterSeverityRank[tostring(b.severity or 'important'):lower()] or 4;
+        local ar = guiOps.encounterSeverityRank[tostring(a.severity or 'important'):lower()] or 4;
+        local br = guiOps.encounterSeverityRank[tostring(b.severity or 'important'):lower()] or 4;
         if (ar ~= br) then return ar < br; end
         return tostring(a.ability or a.actor or a.id):lower() < tostring(b.ability or b.actor or b.id):lower();
     end);
@@ -4825,14 +4692,14 @@ local function get_active_profile_rules(limit)
     return rows;
 end
 
-local function first_message_line(rule)
+function guiOps.first_message_line(rule)
     local message = tostring(rule.message or rule.loss_message or rule.ability or rule.actor or 'Verified mechanic');
     return message:match('([^\r\n]+)') or message;
 end
 
-local function get_active_counter_labels(limit)
+function guiOps.get_active_counter_labels(limit)
     local labels, seen = {}, {};
-    for _, rule in ipairs(get_active_profile_rules()) do
+    for _, rule in ipairs(guiOps.get_active_profile_rules()) do
         local counter = get_available_counter(rule);
         if (counter ~= nil) then
             local label = tostring(counter.label or counter.name or 'Available response'):gsub('[!\r\n]+$', '');
@@ -4847,22 +4714,22 @@ local function get_active_counter_labels(limit)
     return labels;
 end
 
-local function get_encounter_categories()
-    return encounterBrowser.build_categories(warn.rules.catalog or {}, get_all_context_rules(), get_rule_group);
+function guiOps.get_encounter_categories()
+    return encounterBrowser.build_categories(warn.rules.catalog or {}, get_all_context_rules(), guiOps.get_rule_group);
 end
 
-local function text_colored_wrapped(color, value)
+function guiOps.text_colored_wrapped(color, value)
     imgui.PushStyleColor(ImGuiCol_Text, color);
     imgui.TextWrapped(tostring(value or ''));
     imgui.PopStyleColor();
 end
 
-local function render_current_encounter_panel()
+function guiOps.render_current_encounter_panel()
     local state = warn.activeEncounter.state;
     local profile = warn.activeEncounter.engine.get_profile(warn.activeEncounter.index, state);
     local manualOpen = warn.manualEncounterOpen[1] == true;
-    local profileRuleCount = profile ~= nil and #get_active_profile_rules(4) or 0;
-    local profileCounterCount = profile ~= nil and #get_active_counter_labels(3) or 0;
+    local profileRuleCount = profile ~= nil and #guiOps.get_active_profile_rules(4) or 0;
+    local profileCounterCount = profile ~= nil and #guiOps.get_active_counter_labels(3) or 0;
     local profileHeight = 170 + (profileRuleCount * 22) + (profileCounterCount > 0 and 22 or 0);
     local panelHeight = profile ~= nil and profileHeight or 145;
     if (#(state.candidates or {}) > 0 and profile == nil) then panelHeight = 190; end
@@ -4886,10 +4753,10 @@ local function render_current_encounter_panel()
         imgui.TextColored({ 0.96, 0.78, 0.32, 1.0 }, profile.encounter);
         imgui.SameLine();
         imgui.TextColored(state.confidence == 'confirmed' and { 0.55, 1.0, 0.60, 1.0 } or { 0.72, 0.82, 0.94, 1.0 }, confidence);
-        text_colored_wrapped({ 0.66, 0.74, 0.86, 1.0 }, profile.content .. ' / ' .. profile.group ..
+        guiOps.text_colored_wrapped({ 0.66, 0.74, 0.86, 1.0 }, profile.content .. ' / ' .. profile.group ..
             (state.actor ~= nil and ('   Evidence: ' .. tostring(state.actor)) or ''));
 
-        local rules = get_active_profile_rules(4);
+        local rules = guiOps.get_active_profile_rules(4);
         if (#rules == 0) then
             imgui.TextColored({ 0.72, 0.72, 0.72, 1.0 }, 'Indexed only - no verified automatic alerts.');
         else
@@ -4899,18 +4766,18 @@ local function render_current_encounter_panel()
                     (severity == 'danger' and { 1.0, 0.72, 0.25, 1.0 } or { 0.55, 0.82, 1.0, 1.0 });
                 imgui.TextColored(color, '[' .. severity:upper() .. '] ' .. tostring(rule.ability or rule.actor or rule.id));
                 imgui.SameLine();
-                imgui.TextColored({ 0.78, 0.82, 0.88, 1.0 }, ' - ' .. first_message_line(rule));
+                imgui.TextColored({ 0.78, 0.82, 0.88, 1.0 }, ' - ' .. guiOps.first_message_line(rule));
             end
         end
 
-        local counters = get_active_counter_labels(3);
+        local counters = guiOps.get_active_counter_labels(3);
         if (#counters > 0) then
             imgui.TextColored({ 0.58, 0.92, 0.66, 1.0 }, 'Your available responses: ' .. table.concat(counters, '  /  '));
         end
         if (imgui.Button('Focus in Browser##warn_encounter_focus')) then
             warn.encounterContent = profile.content;
             warn.encounterGroup = profile.group;
-            local rulesForProfile = get_active_profile_rules(1);
+            local rulesForProfile = guiOps.get_active_profile_rules(1);
             warn.selectedRuleId = rulesForProfile[1] ~= nil and rulesForProfile[1].id or nil;
         end
         imgui.SameLine();
@@ -4920,7 +4787,7 @@ local function render_current_encounter_panel()
         end
     elseif (#(state.candidates or {}) > 0) then
         imgui.TextColored({ 1.0, 0.72, 0.25, 1.0 }, 'Multiple verified encounters match the current evidence.');
-        text_colored_wrapped({ 0.66, 0.74, 0.86, 1.0 }, 'Warn will not guess. Choose the encounter manually or wait for a unique action.');
+        guiOps.text_colored_wrapped({ 0.66, 0.74, 0.86, 1.0 }, 'Warn will not guess. Choose the encounter manually or wait for a unique action.');
         for index = 1, math.min(#state.candidates, 4) do
             local candidate = warn.activeEncounter.index.profiles[state.candidates[index]];
             if (candidate ~= nil and imgui.Button(candidate.encounter .. '##warn_candidate_' .. index)) then
@@ -4931,7 +4798,7 @@ local function render_current_encounter_panel()
         end
     else
         imgui.TextColored({ 0.72, 0.82, 0.94, 1.0 }, 'No active encounter detected.');
-        text_colored_wrapped({ 0.62, 0.68, 0.76, 1.0 },
+        guiOps.text_colored_wrapped({ 0.62, 0.68, 0.76, 1.0 },
             'Warn activates from a verified boss entity or action. Unknown abilities continue into Learning without producing alerts.');
     end
 
@@ -4961,7 +4828,7 @@ local function render_current_encounter_panel()
     imgui.EndChild();
 end
 
-local function get_available_content_width(default_width)
+function guiOps.get_available_content_width(default_width)
     if (type(imgui.GetContentRegionAvail) == 'function') then
         local ok, size = pcall(imgui.GetContentRegionAvail);
         if (ok and size ~= nil) then
@@ -4974,14 +4841,14 @@ local function get_available_content_width(default_width)
     return tonumber(default_width) or 800;
 end
 
-local function render_rule_detail(selectedRule)
+function guiOps.render_rule_detail(selectedRule)
     if (selectedRule == nil) then
         imgui.TextColored({ 0.62, 0.62, 0.62, 1.0 }, 'Select an encounter alert to review it.');
         return;
     end
 
-    text_colored_wrapped({ 1.0, 0.90, 0.42, 1.0 }, get_rule_display_name(selectedRule));
-    text_colored_wrapped({ 0.72, 0.78, 0.86, 1.0 },
+    guiOps.text_colored_wrapped({ 1.0, 0.90, 0.42, 1.0 }, get_rule_display_name(selectedRule));
+    guiOps.text_colored_wrapped({ 0.72, 0.78, 0.86, 1.0 },
         tostring(selectedRule.content or 'Other') .. ' / ' .. tostring(selectedRule.encounter or selectedRule.actor or 'General'));
 
     local severity = tostring(selectedRule.severity or 'important');
@@ -5018,12 +4885,12 @@ local function render_rule_detail(selectedRule)
     imgui.SameLine();
     if (imgui.Button('Reset Alert')) then reset_rule_override(selectedRule); end
     if (selectedRule.message ~= nil) then
-        text_colored_wrapped({ 0.65, 1.0, 0.65, 1.0 }, 'Message: ' .. tostring(selectedRule.message):gsub('\n', ' / '));
+        guiOps.text_colored_wrapped({ 0.65, 1.0, 0.65, 1.0 }, 'Message: ' .. tostring(selectedRule.message):gsub('\n', ' / '));
     end
-    text_colored_wrapped({ 0.55, 0.58, 0.64, 1.0 }, 'Rule ID: ' .. tostring(selectedRule.id));
+    guiOps.text_colored_wrapped({ 0.55, 0.58, 0.64, 1.0 }, 'Rule ID: ' .. tostring(selectedRule.id));
 end
 
-local function render_live_encounter_tools()
+function guiOps.render_live_encounter_tools()
     local content = warn.encounterContent;
     local showBumba = content == 'Odyssey' or warn.encounter.bumba.active;
     local showOngo = content == 'Odyssey' or (warn.encounter.ongo ~= nil and warn.encounter.ongo.active);
@@ -5033,7 +4900,7 @@ local function render_live_encounter_tools()
 
     imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Live Encounter Tools');
     if (not showBumba and not showOngo and not showAminon and not showCircles) then
-        text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
+        guiOps.text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
             'Select Odyssey, Sortie, or Dynamis - Divergence to prepare its live tactical panel.');
     end
 
@@ -5061,7 +4928,7 @@ local function render_live_encounter_tools()
         else
             imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 }, 'Waiting for Ongo to use Crashing Thunder.');
         end
-        text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
+        guiOps.text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
             'Earth Magic Bursts are counted from completed action packets. Warn still asks for blue-proc confirmation so a burst count is never mistaken for proof that the fetters cleared.');
     end
 
@@ -5112,7 +4979,7 @@ local function render_live_encounter_tools()
             warn.encounter.timers.bumba_fetters = nil;
             warn.encounter.timers.bumba_element_shift = nil;
         end
-        text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
+        guiOps.text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
             'Color remains manual until a stable packet signature is verified. The timer starts automatically on Bumba\'s first observed action or from the button above.');
 
         if (warn.settings.context.encounter_diagnostics) then
@@ -5147,7 +5014,7 @@ local function render_live_encounter_tools()
         else
             imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 }, 'Waiting for an Aminon elemental TP move.');
         end
-        text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
+        guiOps.text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
             'Completed spell packets track the five consecutive matching elemental hits. A damaging wrong-element spell resets the displayed sequence.');
     end
 
@@ -5169,7 +5036,7 @@ local function render_live_encounter_tools()
             imgui.TextColored(pulse.distance <= 45 and { 1.0, 0.35, 0.30, 1.0 } or { 1.0, 0.72, 0.25, 1.0 },
                 string.format('Recent observed pulse: %.1f yalms away.', pulse.distance));
         end
-        text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
+        guiOps.text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
             'Proximity appears only after Warn observes an actual Circle pulse. Element identities remain unresolved because every object shares the same name.');
     end
 
@@ -5191,16 +5058,16 @@ function render_context_tab()
     local uiSettings = warn.settings.ui;
     imgui.BeginChild('warn_encounters_scroll', { 0, 0 }, 0);
     imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Encounter Intelligence');
-    text_colored_wrapped({ 0.70, 0.78, 0.88, 1.0 },
+    guiOps.text_colored_wrapped({ 0.70, 0.78, 0.88, 1.0 },
         'Browse verified mechanics. Unknown observations enter Learning and never alert unless you explicitly Custom Watch them.');
-    render_current_encounter_panel();
+    guiOps.render_current_encounter_panel();
     imgui.Separator();
     imgui.TextColored({ 0.72, 0.78, 0.86, 1.0 }, 'Search encounter alerts');
     if (type(imgui.PushItemWidth) == 'function') then imgui.PushItemWidth(-1); end
     imgui.InputText('##warn_encounter_search', warn.ruleSearch, 255);
     if (type(imgui.PopItemWidth) == 'function') then imgui.PopItemWidth(); end
 
-    local categories = get_encounter_categories();
+    local categories = guiOps.get_encounter_categories();
     local allRules = get_all_context_rules();
 
     if (imgui.Button('Collapse All##warn_categories_collapse')) then
@@ -5222,7 +5089,7 @@ function render_context_tab()
         save_settings();
     end
 
-    local availableWidth = get_available_content_width(900);
+    local availableWidth = guiOps.get_available_content_width(900);
     local categoryWidth = math.max(220, math.min(340, availableWidth * 0.34));
     imgui.BeginChild('warn_encounter_categories', { categoryWidth, 410 }, ImGuiChildFlags_Borders);
     if (imgui.Selectable('All Encounters', warn.encounterContent == nil)) then
@@ -5260,7 +5127,7 @@ function render_context_tab()
     local visibleRules = {};
     for _, rule in ipairs(allRules) do
         local content = tostring(rule.content or 'Other');
-        local group = get_rule_group(rule);
+        local group = guiOps.get_rule_group(rule);
         local encounter = tostring(rule.encounter or rule.actor or 'General');
         local haystack = (tostring(rule.id or '') .. ' ' .. content .. ' ' .. group .. ' ' .. encounter .. ' ' .. get_rule_display_name(rule) .. ' ' .. tostring(rule.message or '')):lower();
         local categoryMatch = (warn.encounterContent == nil or content == warn.encounterContent)
@@ -5280,7 +5147,7 @@ function render_context_tab()
     end
     if (#visibleRules == 0) then
         local selectedGroup = encounterBrowser.find_group(categories, warn.encounterContent, warn.encounterGroup);
-        text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
+        guiOps.text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
             encounterBrowser.empty_message(warn.encounterContent, warn.encounterGroup, searchTerm, selectedGroup));
     end
     imgui.EndChild();
@@ -5294,11 +5161,11 @@ function render_context_tab()
         end
     end
     if (not selectedVisible) then selectedRule = visibleRules[1]; warn.selectedRuleId = selectedRule and selectedRule.id or nil; end
-    render_rule_detail(selectedRule);
+    guiOps.render_rule_detail(selectedRule);
     imgui.EndChild();
 
     imgui.Separator();
-    render_live_encounter_tools();
+    guiOps.render_live_encounter_tools();
     imgui.Separator();
     if (imgui.CollapsingHeader('Custom Watches (Advanced)', 0)) then
         render_abilities_tab(true);
@@ -5312,7 +5179,7 @@ end
 -- GUI: Global Debuffs tab
 --------------------------------------------------------------------------------------------------
 
-local function build_debuff_sound_combo(definition)
+function guiOps.build_debuff_sound_combo(definition)
     local override = get_debuff_override(definition, true);
     local selectedValue = tostring(override.sound or '__global__');
     local inheritedLabel;
@@ -5543,7 +5410,7 @@ function render_debuffs_tab()
             end
 
             imgui.Text('Alert Sound:');
-            local comboText, comboValues, selectedIndex = build_debuff_sound_combo(definition);
+            local comboText, comboValues, selectedIndex = guiOps.build_debuff_sound_combo(definition);
             local soundSelection = { selectedIndex };
             if (imgui.Combo('##warn_debuff_sound_combo', soundSelection, comboText)) then
                 local override = get_debuff_override(definition, true);
@@ -5813,7 +5680,7 @@ end
 -- GUI: Sound tab
 --------------------------------------------------------------------------------------------------
 
-local function build_sound_combo(selectedName)
+function guiOps.build_sound_combo(selectedName)
     selectedName = tostring(selectedName or 'None');
     local values = {};
     local labels = {};
@@ -5853,7 +5720,7 @@ function render_sound_tab()
 
     imgui.TextColored({ 1.0, 1.0, 1.0, 1.0 }, 'Sound:');
 
-    local values, soundNames, soundIndex = build_sound_combo(warn.settings.sound.selected);
+    local values, soundNames, soundIndex = guiOps.build_sound_combo(warn.settings.sound.selected);
     local selected = { soundIndex };
     if (imgui.Combo('##warn_sound_combo', selected, soundNames)) then
         warn.settings.sound.selected = values[selected[1] + 1] or 'None';
@@ -5877,7 +5744,7 @@ function render_sound_tab()
     imgui.TextColored({ 0.7, 0.7, 0.7, 1.0 },
         'Plays once per FFXI launch. Reloading Warn will not play it again.');
 
-    local firstValues, firstNames, firstIndex = build_sound_combo(warn.settings.sound.first_open_selected);
+    local firstValues, firstNames, firstIndex = guiOps.build_sound_combo(warn.settings.sound.first_open_selected);
     local firstSelected = { firstIndex };
     if (imgui.Combo('##warn_first_open_sound_combo', firstSelected, firstNames)) then
         warn.settings.sound.first_open_selected = firstValues[firstSelected[1] + 1] or 'None';
@@ -5897,7 +5764,7 @@ end
 -- GUI: Options navigation
 --------------------------------------------------------------------------------------------------
 
-local function draw_role_icon(icon, x, y, size)
+function guiOps.draw_role_icon(icon, x, y, size)
     local draw = imgui.GetWindowDrawList();
     local color = imgui.GetColorU32((warn.ui.theme and warn.ui.theme.brass_hover) or { 1.0, 0.84, 0.50, 1.0 });
     local dim = imgui.GetColorU32((warn.ui.theme and warn.ui.theme.brass_dim) or { 0.55, 0.45, 0.25, 1.0 });
@@ -5977,10 +5844,10 @@ local function draw_role_icon(icon, x, y, size)
     end
 end
 
-local function render_role_choice(definition, profile)
+function guiOps.render_role_choice(definition, profile)
     local cursor_x, cursor_y = imgui.GetCursorScreenPos();
     if (definition.icon ~= nil) then
-        draw_role_icon(definition.icon, cursor_x + 1, cursor_y - 1, 24 * get_ui_scale());
+        guiOps.draw_role_icon(definition.icon, cursor_x + 1, cursor_y - 1, 24 * get_ui_scale());
         imgui.SetCursorPosX(imgui.GetCursorPosX() + (33 * get_ui_scale()));
     end
     local enabled = profile[definition.id] == true;
@@ -5993,7 +5860,7 @@ local function render_role_choice(definition, profile)
     imgui.Spacing();
 end
 
-local function render_responsibility_options()
+function guiOps.render_responsibility_options()
     ensure_responsibility_settings();
     local profile, key = get_current_responsibility_profile(true);
     imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Roles');
@@ -6011,14 +5878,14 @@ local function render_responsibility_options()
 
     imgui.TextColored({ 0.84, 0.70, 0.38, 1.0 }, 'Party Role');
     for _, definition in ipairs(warn.mechanics.responsibilities) do
-        if (definition.group == 'role') then render_role_choice(definition, profile); end
+        if (definition.group == 'role') then guiOps.render_role_choice(definition, profile); end
     end
 
     imgui.Spacing();
     imgui.Separator();
     imgui.TextColored({ 0.84, 0.70, 0.38, 1.0 }, 'Special Assignments');
     for _, definition in ipairs(warn.mechanics.responsibilities) do
-        if (definition.group == 'assignment') then render_role_choice(definition, profile); end
+        if (definition.group == 'assignment') then guiOps.render_role_choice(definition, profile); end
     end
 
     imgui.Separator();
@@ -6034,7 +5901,7 @@ local function render_responsibility_options()
         'This role profile is remembered automatically for this character and main job/subjob combination.');
 end
 
-local function render_alert_options()
+function guiOps.render_alert_options()
     ensure_context_settings();
     local cfg = warn.settings.context;
     imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Alert Behavior');
@@ -6134,11 +6001,11 @@ end
 function render_options_tab()
     local learningCounts = get_learning_counts();
     local sections = {
-        { label = 'Roles', render = render_responsibility_options },
+        { label = 'Roles', render = guiOps.render_responsibility_options },
         { label = learningCounts.suggested > 0 and ('Learning (' .. learningCounts.suggested .. ')') or 'Learning', render = render_timer_learning_tab },
         { label = warn.community.status == 'update_available' and 'Database (!)' or 'Database', render = render_community_database_tab },
         { label = 'Debuffs', render = render_debuffs_tab },
-        { label = 'Alerts', render = render_alert_options },
+        { label = 'Alerts', render = guiOps.render_alert_options },
         { label = 'Appearance', render = render_appearance_tab },
         { label = 'Sound', render = render_sound_tab },
     };
@@ -6163,7 +6030,7 @@ end
 -- GUI: main window
 --------------------------------------------------------------------------------------------------
 
-local function render_launcher()
+function guiOps.render_launcher()
     ensure_ui_settings();
     local ui = warn.settings.ui;
     if (ui.launcher_enabled ~= true) then return; end
@@ -6335,12 +6202,12 @@ function render_config_window()
     uiTheme.pop();
 end
 
-local function controller_visible_rules()
+function guiOps.controller_visible_rules()
     local result = {};
     for _, rule in ipairs(get_all_context_rules()) do
         if (rule.verified == true) then
             local content = tostring(rule.content or 'Other');
-            local group = get_rule_group(rule);
+            local group = guiOps.get_rule_group(rule);
             if (warn.encounterContent == nil or content == warn.encounterContent) and
                (warn.encounterGroup == nil or group == warn.encounterGroup) then
                 table.insert(result, rule);
@@ -6351,9 +6218,9 @@ local function controller_visible_rules()
     return result;
 end
 
-local function controller_move_category(delta)
+function guiOps.controller_move_category(delta)
     local choices = { { content = nil, group = nil } };
-    for _, category in ipairs(get_encounter_categories()) do
+    for _, category in ipairs(guiOps.get_encounter_categories()) do
         table.insert(choices, { content = category.content, group = nil });
         for _, group in ipairs(category.groups) do
             if (encounterBrowser.group_is_visible(group, warn.settings.ui.show_indexed_only)) then
@@ -6369,18 +6236,18 @@ local function controller_move_category(delta)
     warn.encounterGroup = selected.group;
     if (selected.content ~= nil) then warn.settings.ui.encounter_collapsed[selected.content] = false; end
     warn.ui.encounter_rule_index = 1;
-    local rules = controller_visible_rules();
+    local rules = guiOps.controller_visible_rules();
     warn.selectedRuleId = rules[1] and rules[1].id or nil;
 end
 
-local function controller_move_rule(delta)
-    local rules = controller_visible_rules();
+function guiOps.controller_move_rule(delta)
+    local rules = guiOps.controller_visible_rules();
     if (#rules == 0) then return; end
     warn.ui.encounter_rule_index = ((warn.ui.encounter_rule_index - 1 + delta) % #rules) + 1;
     warn.selectedRuleId = rules[warn.ui.encounter_rule_index].id;
 end
 
-local function handle_controller_action(action)
+function guiOps.handle_controller_action(action)
     if (warn.settings == nil or warn.isGuiOpen[1] ~= true) then return false; end
     ensure_ui_settings();
     if (warn.settings.ui.controller_enabled ~= true) then return false; end
@@ -6388,10 +6255,10 @@ local function handle_controller_action(action)
         warn.mainTab[1] = warn.mainTab[1] == 1 and 2 or 1;
     elseif (action == 'up' or action == 'down') then
         local delta = action == 'up' and -1 or 1;
-        if (warn.mainTab[1] == 1) then controller_move_category(delta);
+        if (warn.mainTab[1] == 1) then guiOps.controller_move_category(delta);
         else warn.optionsSection[1] = ((warn.optionsSection[1] - 1 + delta) % 7) + 1; end
     elseif (action == 'left' or action == 'right') then
-        if (warn.mainTab[1] == 1) then controller_move_rule(action == 'left' and -1 or 1);
+        if (warn.mainTab[1] == 1) then guiOps.controller_move_rule(action == 'left' and -1 or 1);
         else return false; end
     elseif (action == 'close') then
         warn.isGuiOpen[1] = false;
@@ -6502,7 +6369,7 @@ ashita.events.register('xinput_button', 'warn_xinput_button_cb', function (e)
         [5] = 'close', [8] = 'tab_left', [9] = 'tab_right', [13] = 'close',
     };
     local action = actions[tonumber(e.button)];
-    if (action ~= nil and handle_controller_action(action)) then e.blocked = true; end
+    if (action ~= nil and guiOps.handle_controller_action(action)) then e.blocked = true; end
 end);
 
 ashita.events.register('dinput_button', 'warn_dinput_button_cb', function (e)
@@ -6522,7 +6389,7 @@ ashita.events.register('dinput_button', 'warn_dinput_button_cb', function (e)
         elseif (warn.settings.ui.controller_layout == 'switch' and button == 49) then action = 'close';
         end
     end
-    if (action ~= nil and handle_controller_action(action)) then e.blocked = true; end
+    if (action ~= nil and guiOps.handle_controller_action(action)) then e.blocked = true; end
 end);
 
 ashita.events.register('command', 'command_cb', function (e)
@@ -6983,7 +6850,7 @@ ashita.events.register('d3d_present', 'present_cb', function ()
     flush_debuff_loss_batch();
     save_pending_learning_data();
     process_community_requests();
-    render_launcher();
+    guiOps.render_launcher();
     render_config_window();
     render_overlay();
     render_encounter_hud();

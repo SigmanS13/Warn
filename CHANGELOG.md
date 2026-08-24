@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0.3
+- Fixed the LuaJIT `main function has more than 200 local variables` load failure introduced in v3.0.2.
+- Extracted native WAV discovery, Windows playback, and process-session detection into `data/sound_runtime.lua` without changing the sound settings or alert behavior.
+- Consolidated GUI-only helpers behind one internal namespace, reducing Warn's top-level local declarations from approximately 220 to 189 and leaving room for future development.
+- Added a full-main-chunk compilation regression so syntax-only parsing and isolated module tests can no longer miss Lua's function-local limit.
+- All **61 Lua files parse cleanly** and all **22 test suites pass**, including complete `warn.lua` compilation.
+
 ## 3.0.2
 - Added an optional first-GUI-open cue under **Options → Sound**, defaulting to `firstopen.wav`. The selected cue is consumed once per FFXI process, so closing/reopening Warn or reloading the addon cannot replay it during the same game launch.
 - Added an independent first-open sound selector and manual test button. Missing custom filenames remain visible in the selector instead of being silently replaced.
