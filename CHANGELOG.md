@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.6.1
+- Rebuilt the encounter-category pane with persistent per-content collapse controls plus **Collapse All** and **Expand All** actions.
+- Added verified-alert counts to content and group labels so populated sections can be identified at a glance.
+- Hidden catalog-only research groups by default. **Show Indexed-Only Groups** reveals them with an explicit label and a clear research-only empty state rather than an apparently broken results panel.
+- Made the category pane width responsive, widened it substantially at normal window sizes, and separated the search label from its input so neither is clipped.
+- Wrapped long encounter titles, metadata, messages, and rule IDs in the detail pane; severity now occupies its own row to preserve the full prediction and target information.
+- Updated controller category traversal to follow the visible verified-group filter and automatically expand the selected content family.
+- Added a pure encounter-browser metadata helper and regression coverage for alert counts, indexed-only filtering, labels, and empty-state wording.
+
+## 2.6.0
+- Added the complete **Sortie NM and boss index**: eight sector NMs, four ground-floor bosses, four basement bosses, and Aminon.
+- Added 44 verified Sortie action alerts and two encounter-state warnings. Coverage includes elemental response changes, water absorption, Taint escalation, Setting the Stage, Vivisection, Cesspool, and Aminon's lethal/dispelling mechanics.
+- Added a complete named **Odyssey** catalog: 16 Sheol A NMs, 27 Sheol B NMs, 7 Sheol C NMs, the shared Mimic hazard, and all 17 Sheol Gaol bosses.
+- Added 24 verified Odyssey alerts for Mimics and every Atonement 3–4 boss: Xevioso, Ngai, Kalunga, Ongo, Mboze, Arebati, and Bumba.
+- Audited Omen and retained its existing complete 9-boss, 27-rule module. Floor-objective progress remains outside the alert database until it can be derived reliably without noisy inference.
+- Extended `/warn rules` and `/warn coverage` summaries to report Sortie and Odyssey counts.
+- Added dedicated Sortie and Odyssey regression suites. The bundled database now contains **335 ability/spell rules, 16 encounter-state rules, and 300 indexed encounter entries**.
+
 ## 2.5.0
 - Expanded historical **Ambuscade Volume 2** from 23 to **54 actionable encounter families**. The new history module adds 27 verified ability alerts and 5 state alerts across 31 previously catalog-only encounters.
 - Kept 13 sparsely documented historical Volume 2 encounters indexed but non-actionable rather than inventing mechanics or responses.

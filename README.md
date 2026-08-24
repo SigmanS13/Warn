@@ -42,6 +42,8 @@ warn/
       geas_fete.lua
       high_tier_battlefields.lua
       omen.lua
+      sortie.lua
+      odyssey.lua
       COVERAGE.md
   sounds/
     *.wav
@@ -50,6 +52,7 @@ warn/
       theme.txt
       launcher.png
   ui/
+    encounter_browser.lua
     theme.lua
     textures.lua
     portraits.lua
@@ -69,6 +72,12 @@ The GUI has two top-level areas:
 
 - **Encounters** — a metadata-driven browser for verified mechanics, plus a collapsed **Custom Watches** fallback
 - **Options** — Roles, Learning, Database, Debuffs, Alerts, Appearance, and Sound
+
+The Encounters category pane supports independent `[+] / [-]` sections plus **Collapse All**
+and **Expand All**. It shows only groups containing verified alerts by default. Enable
+**Show Indexed-Only Groups** to inspect cataloged research targets that do not yet generate
+warnings; those entries are labeled explicitly so an empty result cannot be mistaken for a
+loading failure.
 
 The default configuration is intended to work without setup; advanced customization is optional.
 
@@ -152,11 +161,11 @@ Current shipped rules are a verified starter set, not a claim of complete FFXI c
 Rules should preserve source/provenance metadata and should not guess whether a move is
 stunnable, silenceable, avoidable, etc.
 
-The v2.5 bundled database contains **267 ability/spell rules, 14 encounter-state rules, and
-215 indexed encounter entries**. Historical Ambuscade Volume 2 has 54 actionable families out
+The v2.6 bundled database contains **335 ability/spell rules, 16 encounter-state rules, and
+300 indexed encounter entries**. Historical Ambuscade Volume 2 has 54 actionable families out
 of 67 indexed families. All 30 indexed HTMB categories have direct rules or inherited actor rules,
-and all 85 encounters on the Geas Fete Aeonic route are indexed. Geas Fete's initial actionable
-set concentrates on Warder of Courage and the seven Reisenjima HELMs.
+and all 85 encounters on the Geas Fete Aeonic route are indexed. Sortie includes all 17 named
+sector NMs and bosses. Odyssey includes 67 named Sheol/Gaol NMs plus the shared Mimic hazard.
 
 ## Job-specific counters
 
@@ -187,6 +196,24 @@ evidence unless the player explicitly enables a Custom Watch.
 
 The Custom Watches catalog is populated from Ashita's local monster-ability resources. The
 packaged `data/abilities.txt` list is retained only as an offline compatibility fallback.
+
+## v2.6 Sortie, Odyssey, and Omen audit
+
+Sortie now indexes all eight sector NMs, all eight A-H major bosses, and Aminon. Its actionable
+rules emphasize elemental-response changes, Taint and water-absorption hazards, stack mechanics,
+lethal scripted attacks, full dispels, Doom, equipment removal, and Reraise removal. Hidden chest
+objectives remain outside the rule engine because Warn cannot yet track their complete state from
+combat actions alone.
+
+Odyssey now indexes all named NMs in Sheol A, B, and C, the shared Mimic hazard, and all 17 Sheol
+Gaol bosses. The initial actionable layer covers Death Trap / Hell Trap and every Atonement 3-4
+boss, where proc windows, fetters, dangerous positioning, full dispels, hate resets, and lethal
+abilities benefit most from immediate recognition. Lower Sheol and Atonement 1-2 encounters remain
+indexed for future verified curation rather than receiving generic family warnings.
+
+Omen's existing module was audited and remains complete at three Glassy mid-bosses, six Caturae
+bosses, and 27 verified alerts. Its fixed HP-gate classifications and reaction rules did not need
+replacement or duplication.
 
 ## v2.5 database expansion
 

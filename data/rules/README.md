@@ -11,6 +11,8 @@ Warn's encounter knowledge is intentionally kept outside `warn.lua` so the datab
 - `ambuscade_v2_history.lua` — additional verified historical Volume 2 profiles
 - `high_tier_battlefields.lua` — HTMB rules
 - `omen.lua` — Omen Glassy mid-boss and Caturae boss rules
+- `sortie.lua` — complete Sortie NM/boss index and verified major-boss mechanics
+- `odyssey.lua` — complete named Sheol/Gaol NM index and verified high-impact Gaol rules
 - `geas_fete.lua` — complete Aeonic-route Geas Fete index and verified high-impact rules
 - `COVERAGE.md` — progress tracker and research queue
 

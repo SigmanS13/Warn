@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '2.5.0';
+addon.version   = '2.6.1';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -45,6 +45,7 @@ local ffi      = require('ffi');
 local uiTheme  = require('ui.theme');
 local uiTextures = require('ui.textures');
 local uiPortraits = require('ui.portraits');
+local encounterBrowser = require('ui.encounter_browser');
 
 local COMMUNITY_MANIFEST_URL = 'https://raw.githubusercontent.com/SigmanS13/Warn/main/community/manifest.json';
 
@@ -87,6 +88,8 @@ local default_settings = T{
         launcher_size        = 58,
         controller_enabled   = true,
         controller_layout    = 'xinput', -- xinput / playstation / switch
+        show_indexed_only    = false,
+        encounter_collapsed  = T{},
     },
     sound = T{
         enabled  = false,
@@ -594,6 +597,8 @@ local function ensure_ui_settings()
     if (cfg.launcher_size == nil) then cfg.launcher_size = 58; end
     if (cfg.controller_enabled == nil) then cfg.controller_enabled = true; end
     if (cfg.controller_layout == nil) then cfg.controller_layout = 'xinput'; end
+    if (cfg.show_indexed_only == nil) then cfg.show_indexed_only = false; end
+    if (cfg.encounter_collapsed == nil) then cfg.encounter_collapsed = T{}; end
 
     if (warn.settings.overlay == nil) then warn.settings.overlay = T{}; end
     local overlay = warn.settings.overlay;
@@ -3100,7 +3105,7 @@ local function update_state_rules()
 end
 
 local function get_catalog_counts()
-    local counts = { total = 0, ambu1 = 0, ambu2 = 0, htmb = 0, omen = 0, geas = 0 };
+    local counts = { total = 0, ambu1 = 0, ambu2 = 0, htmb = 0, omen = 0, geas = 0, sortie = 0, odyssey = 0 };
     for _, entry in ipairs(warn.rules.catalog or {}) do
         counts.total = counts.total + 1;
         if (entry.content == 'Ambuscade' and entry.group == 'Volume 1') then counts.ambu1 = counts.ambu1 + 1; end
@@ -3108,6 +3113,8 @@ local function get_catalog_counts()
         if (entry.content == 'High-Tier Mission Battlefields') then counts.htmb = counts.htmb + 1; end
         if (entry.content == 'Omen') then counts.omen = counts.omen + 1; end
         if (entry.content == 'Geas Fete') then counts.geas = counts.geas + 1; end
+        if (entry.content == 'Sortie') then counts.sortie = counts.sortie + 1; end
+        if (entry.content == 'Odyssey') then counts.odyssey = counts.odyssey + 1; end
     end
     return counts;
 end
@@ -3116,12 +3123,12 @@ local function print_rule_summary()
     local a = #(warn.rules.ability_rules or {});
     local st = #(warn.rules.state_rules or {});
     local c = get_catalog_counts();
-    print(chat.header(addon.name):append(chat.message(string.format('Loaded %d action rules + %d state rules. Indexed encounters: %d (Ambuscade V1 %d / V2 %d, HTMB %d, Omen %d, Geas Fete %d). Player: %s', a, st, c.total, c.ambu1, c.ambu2, c.htmb, c.omen, c.geas, get_player_job_text()))));
+    print(chat.header(addon.name):append(chat.message(string.format('Loaded %d action rules + %d state rules. Indexed encounters: %d (Ambuscade V1 %d / V2 %d, HTMB %d, Omen %d, Geas %d, Sortie %d, Odyssey %d). Player: %s', a, st, c.total, c.ambu1, c.ambu2, c.htmb, c.omen, c.geas, c.sortie, c.odyssey, get_player_job_text()))));
 end
 
 local function print_coverage_summary()
     local c = get_catalog_counts();
-    print(chat.header(addon.name):append(chat.message(string.format('Coverage index: Ambuscade V1 %d, Ambuscade V2 %d, HTMB %d, Omen %d, Geas Fete %d (%d total encounters).', c.ambu1, c.ambu2, c.htmb, c.omen, c.geas, c.total))));
+    print(chat.header(addon.name):append(chat.message(string.format('Coverage index: Ambuscade V1 %d, V2 %d, HTMB %d, Omen %d, Geas %d, Sortie %d, Odyssey %d (%d total).', c.ambu1, c.ambu2, c.htmb, c.omen, c.geas, c.sortie, c.odyssey, c.total))));
     print(chat.header(addon.name):append(chat.message(string.format('Currently actionable: %d ability/spell rules + %d encounter-state rules.', #(warn.rules.ability_rules or {}), #(warn.rules.state_rules or {})))));
 end
 
@@ -3910,29 +3917,24 @@ local function get_rule_group(rule)
 end
 
 local function get_encounter_categories()
-    local map = {};
-    for _, entry in ipairs(warn.rules.catalog or {}) do
-        local content = tostring(entry.content or 'Other');
-        local group = tostring(entry.group or 'General');
-        map[content] = map[content] or {};
-        map[content][group] = true;
-    end
-    for _, rule in ipairs(get_all_context_rules()) do
-        if (rule.verified == true) then
-            local content = tostring(rule.content or 'Other');
-            map[content] = map[content] or {};
-            map[content][get_rule_group(rule)] = true;
+    return encounterBrowser.build_categories(warn.rules.catalog or {}, get_all_context_rules(), get_rule_group);
+end
+
+local function text_colored_wrapped(color, value)
+    imgui.PushStyleColor(ImGuiCol_Text, color);
+    imgui.TextWrapped(tostring(value or ''));
+    imgui.PopStyleColor();
+end
+
+local function get_available_content_width(default_width)
+    if (type(imgui.GetContentRegionAvail) == 'function') then
+        local ok, size = pcall(imgui.GetContentRegionAvail);
+        if (ok and size ~= nil) then
+            local width = tonumber(size.x or size[1]);
+            if (width ~= nil and width > 0) then return width; end
         end
     end
-    local result = {};
-    for content, groups in pairs(map) do
-        local list = {};
-        for group in pairs(groups) do table.insert(list, group); end
-        table.sort(list);
-        table.insert(result, { content = content, groups = list });
-    end
-    table.sort(result, function (a, b) return a.content:lower() < b.content:lower(); end);
-    return result;
+    return tonumber(default_width) or 800;
 end
 
 local function render_rule_detail(selectedRule)
@@ -3941,8 +3943,8 @@ local function render_rule_detail(selectedRule)
         return;
     end
 
-    imgui.TextColored({ 1.0, 0.90, 0.42, 1.0 }, get_rule_display_name(selectedRule));
-    imgui.TextColored({ 0.72, 0.78, 0.86, 1.0 },
+    text_colored_wrapped({ 1.0, 0.90, 0.42, 1.0 }, get_rule_display_name(selectedRule));
+    text_colored_wrapped({ 0.72, 0.78, 0.86, 1.0 },
         tostring(selectedRule.content or 'Other') .. ' / ' .. tostring(selectedRule.encounter or selectedRule.actor or 'General'));
 
     local severity = tostring(selectedRule.severity or 'important');
@@ -3951,10 +3953,9 @@ local function render_rule_detail(selectedRule)
     local severityColor = severity == 'critical' and { 1.0, 0.35, 0.30, 1.0 }
         or (severity == 'danger' and { 1.0, 0.72, 0.25, 1.0 } or { 0.55, 0.82, 1.0, 1.0 });
     imgui.TextColored(severityColor, 'Severity: ' .. severity:upper());
+    imgui.TextColored({ 0.62, 0.82, 1.0, 1.0 }, 'Prediction: ' .. tostring(prediction));
     imgui.SameLine();
-    imgui.TextColored({ 0.62, 0.82, 1.0, 1.0 }, '   Prediction: ' .. tostring(prediction));
-    imgui.SameLine();
-    imgui.TextColored({ 0.72, 0.88, 0.72, 1.0 }, '   Target: ' .. tostring(shape));
+    imgui.TextColored({ 0.72, 0.88, 0.72, 1.0 }, '  Target: ' .. tostring(shape));
 
     local enabled = is_rule_enabled(selectedRule);
     if (imgui.Checkbox('Enable This Alert##warn_rule_enabled', { enabled })) then set_rule_enabled(selectedRule, not enabled); end
@@ -3980,35 +3981,74 @@ local function render_rule_detail(selectedRule)
     imgui.SameLine();
     if (imgui.Button('Reset Alert')) then reset_rule_override(selectedRule); end
     if (selectedRule.message ~= nil) then
-        imgui.TextColored({ 0.65, 1.0, 0.65, 1.0 }, 'Message: ' .. tostring(selectedRule.message):gsub('\n', ' / '));
+        text_colored_wrapped({ 0.65, 1.0, 0.65, 1.0 }, 'Message: ' .. tostring(selectedRule.message):gsub('\n', ' / '));
     end
-    imgui.TextColored({ 0.55, 0.58, 0.64, 1.0 }, 'Rule ID: ' .. tostring(selectedRule.id));
+    text_colored_wrapped({ 0.55, 0.58, 0.64, 1.0 }, 'Rule ID: ' .. tostring(selectedRule.id));
 end
 
 function render_context_tab()
     ensure_context_settings();
     ensure_rule_settings();
+    ensure_ui_settings();
+    local uiSettings = warn.settings.ui;
     imgui.BeginChild('warn_encounters_scroll', { 0, 0 }, 0);
     imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Encounter Intelligence');
-    imgui.TextColored({ 0.70, 0.78, 0.88, 1.0 },
+    text_colored_wrapped({ 0.70, 0.78, 0.88, 1.0 },
         'Browse verified mechanics. Unknown observations enter Learning and never alert unless you explicitly Custom Watch them.');
-    imgui.InputText('Search Encounters', warn.ruleSearch, 255);
+    imgui.TextColored({ 0.72, 0.78, 0.86, 1.0 }, 'Search encounter alerts');
+    if (type(imgui.PushItemWidth) == 'function') then imgui.PushItemWidth(-1); end
+    imgui.InputText('##warn_encounter_search', warn.ruleSearch, 255);
+    if (type(imgui.PopItemWidth) == 'function') then imgui.PopItemWidth(); end
 
     local categories = get_encounter_categories();
     local allRules = get_all_context_rules();
-    imgui.BeginChild('warn_encounter_categories', { 205, 410 }, ImGuiChildFlags_Borders);
+
+    if (imgui.Button('Collapse All##warn_categories_collapse')) then
+        for _, category in ipairs(categories) do uiSettings.encounter_collapsed[category.content] = true; end
+        save_settings();
+    end
+    imgui.SameLine();
+    if (imgui.Button('Expand All##warn_categories_expand')) then
+        for _, category in ipairs(categories) do uiSettings.encounter_collapsed[category.content] = false; end
+        save_settings();
+    end
+    imgui.SameLine();
+    if (imgui.Checkbox('Show Indexed-Only Groups##warn_show_indexed', { uiSettings.show_indexed_only })) then
+        uiSettings.show_indexed_only = not uiSettings.show_indexed_only;
+        if (not uiSettings.show_indexed_only) then
+            local selectedGroup = encounterBrowser.find_group(categories, warn.encounterContent, warn.encounterGroup);
+            if (selectedGroup ~= nil and (selectedGroup.rule_count or 0) == 0) then warn.encounterGroup = nil; end
+        end
+        save_settings();
+    end
+
+    local availableWidth = get_available_content_width(900);
+    local categoryWidth = math.max(220, math.min(340, availableWidth * 0.34));
+    imgui.BeginChild('warn_encounter_categories', { categoryWidth, 410 }, ImGuiChildFlags_Borders);
     if (imgui.Selectable('All Encounters', warn.encounterContent == nil)) then
         warn.encounterContent = nil; warn.encounterGroup = nil;
     end
     for _, category in ipairs(categories) do
         imgui.Separator();
-        if (imgui.Selectable(category.content, warn.encounterContent == category.content and warn.encounterGroup == nil)) then
-            warn.encounterContent = category.content; warn.encounterGroup = nil;
+        local collapsed = uiSettings.encounter_collapsed[category.content] == true;
+        local categoryLabel = string.format('%s %s  [%d]', collapsed and '[+]' or '[-]', category.content, category.rule_count or 0);
+        if (imgui.Selectable(categoryLabel .. '##content_' .. category.content, false)) then
+            uiSettings.encounter_collapsed[category.content] = not collapsed;
+            save_settings();
+            collapsed = not collapsed;
         end
-        for _, group in ipairs(category.groups) do
-            local selectedGroup = warn.encounterContent == category.content and warn.encounterGroup == group;
-            if (imgui.Selectable('   ' .. group .. '##category_' .. category.content .. '_' .. group, selectedGroup)) then
-                warn.encounterContent = category.content; warn.encounterGroup = group;
+        if (not collapsed) then
+            local contentSelected = warn.encounterContent == category.content and warn.encounterGroup == nil;
+            if (imgui.Selectable('   All alerts  (' .. tostring(category.rule_count or 0) .. ')##all_' .. category.content, contentSelected)) then
+                warn.encounterContent = category.content; warn.encounterGroup = nil;
+            end
+            for _, group in ipairs(category.groups) do
+                if (encounterBrowser.group_is_visible(group, uiSettings.show_indexed_only)) then
+                    local selectedGroup = warn.encounterContent == category.content and warn.encounterGroup == group.name;
+                    if (imgui.Selectable('   ' .. encounterBrowser.group_label(group) .. '##category_' .. category.content .. '_' .. group.name, selectedGroup)) then
+                        warn.encounterContent = category.content; warn.encounterGroup = group.name;
+                    end
+                end
             end
         end
     end
@@ -4038,7 +4078,11 @@ function render_context_tab()
             warn.selectedRuleId = rule.id;
         end
     end
-    if (#visibleRules == 0) then imgui.TextColored({ 0.62, 0.62, 0.62, 1.0 }, 'No verified alerts match this view.'); end
+    if (#visibleRules == 0) then
+        local selectedGroup = encounterBrowser.find_group(categories, warn.encounterContent, warn.encounterGroup);
+        text_colored_wrapped({ 0.62, 0.66, 0.72, 1.0 },
+            encounterBrowser.empty_message(warn.encounterContent, warn.encounterGroup, searchTerm, selectedGroup));
+    end
     imgui.EndChild();
 
     local selectedRule = find_context_rule_by_id(warn.selectedRuleId);
@@ -4994,7 +5038,9 @@ local function controller_move_category(delta)
     for _, category in ipairs(get_encounter_categories()) do
         table.insert(choices, { content = category.content, group = nil });
         for _, group in ipairs(category.groups) do
-            table.insert(choices, { content = category.content, group = group });
+            if (encounterBrowser.group_is_visible(group, warn.settings.ui.show_indexed_only)) then
+                table.insert(choices, { content = category.content, group = group.name });
+            end
         end
     end
     local count = #choices;
@@ -5003,6 +5049,7 @@ local function controller_move_category(delta)
     local selected = choices[warn.ui.encounter_category_index];
     warn.encounterContent = selected.content;
     warn.encounterGroup = selected.group;
+    if (selected.content ~= nil) then warn.settings.ui.encounter_collapsed[selected.content] = false; end
     warn.ui.encounter_rule_index = 1;
     local rules = controller_visible_rules();
     warn.selectedRuleId = rules[1] and rules[1].id or nil;

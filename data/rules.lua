@@ -7,6 +7,8 @@ local modules = {
     'generic.lua',
     'high_tier_battlefields.lua',
     'omen.lua',
+    'sortie.lua',
+    'odyssey.lua',
     'geas_fete.lua',
     'ambuscade_v1.lua',
     'ambuscade_v2.lua',
@@ -14,7 +16,7 @@ local modules = {
 };
 
 local result = {
-    version = 9,
+    version = 10,
     ability_rules = {},
     state_rules = {},
     catalog = {},
