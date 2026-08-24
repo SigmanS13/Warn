@@ -42,10 +42,14 @@ local htbf = dofile('data/rules/high_tier_battlefields.lua');
 local odinRules = {};
 local shadowLordRules = {};
 local puppetRules = {};
+local headWindRules = {};
+local legacyRules = {};
 for _, entry in ipairs(htbf.ability_rules or {}) do
     if entry.actor == 'Odin Prime' then odinRules[entry.id] = entry; end
     if entry.actor == 'Shadow Lord' then shadowLordRules[entry.id] = entry; end
     if entry.actor == 'Lancelord Gaheel Ja' then puppetRules[entry.id] = entry; end
+    if entry.encounter == 'Head Wind' then headWindRules[entry.id] = entry; end
+    if entry.encounter == 'Legacy of the Lost' then legacyRules[entry.id] = entry; end
 end
 assert_equal(odinRules.htbf_odin_dread_spikes.event, 'starts_casting', 'Dread Spikes warns from packet-visible cast start');
 assert_equal(odinRules.htbf_odin_dread_spikes.severity, 'critical', 'Dread Spikes critical severity');
@@ -56,5 +60,9 @@ assert_equal(shadowLordRules.htbf_shadowlord_implosion.severity, 'critical', 'pa
 assert_equal(shadowLordRules.htbf_shadowlord_firaja.event, 'starts_casting', 'Firaja cast warning');
 assert_equal(puppetRules.htbf_gaheel_burning_memories.counter.responsibility, 'interrupt', 'Burning Memories role filter');
 assert_equal(puppetRules.htbf_gaheel_granite_skin.event, 'uses', 'Granite Skin state warning');
+assert_equal(headWindRules.htbf_headwind_rabbit_breakga.event, 'starts_casting', 'Head Wind Breakga cast warning');
+assert_equal(headWindRules.htbf_headwind_rabbit_breakga.counter.responsibility, 'interrupt', 'Head Wind Breakga role filter');
+assert_equal(headWindRules.htbf_headwind_x_charm.severity, 'critical', 'Head Wind Charm severity');
+assert_equal(legacyRules.htbf_legacy_gessho_mijin.severity, 'critical', 'Legacy Mijin severity');
 
 print('mechanics_spec: all checks passed');

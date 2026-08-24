@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '2.4.0';
+addon.version   = '2.5.0';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -3100,12 +3100,14 @@ local function update_state_rules()
 end
 
 local function get_catalog_counts()
-    local counts = { total = 0, ambu1 = 0, ambu2 = 0, htmb = 0 };
+    local counts = { total = 0, ambu1 = 0, ambu2 = 0, htmb = 0, omen = 0, geas = 0 };
     for _, entry in ipairs(warn.rules.catalog or {}) do
         counts.total = counts.total + 1;
         if (entry.content == 'Ambuscade' and entry.group == 'Volume 1') then counts.ambu1 = counts.ambu1 + 1; end
         if (entry.content == 'Ambuscade' and entry.group == 'Volume 2') then counts.ambu2 = counts.ambu2 + 1; end
         if (entry.content == 'High-Tier Mission Battlefields') then counts.htmb = counts.htmb + 1; end
+        if (entry.content == 'Omen') then counts.omen = counts.omen + 1; end
+        if (entry.content == 'Geas Fete') then counts.geas = counts.geas + 1; end
     end
     return counts;
 end
@@ -3114,12 +3116,12 @@ local function print_rule_summary()
     local a = #(warn.rules.ability_rules or {});
     local st = #(warn.rules.state_rules or {});
     local c = get_catalog_counts();
-    print(chat.header(addon.name):append(chat.message(string.format('Loaded %d action rules + %d state rules. Indexed encounters: %d (Ambuscade V1 %d / V2 %d, HTMB %d). Player: %s', a, st, c.total, c.ambu1, c.ambu2, c.htmb, get_player_job_text()))));
+    print(chat.header(addon.name):append(chat.message(string.format('Loaded %d action rules + %d state rules. Indexed encounters: %d (Ambuscade V1 %d / V2 %d, HTMB %d, Omen %d, Geas Fete %d). Player: %s', a, st, c.total, c.ambu1, c.ambu2, c.htmb, c.omen, c.geas, get_player_job_text()))));
 end
 
 local function print_coverage_summary()
     local c = get_catalog_counts();
-    print(chat.header(addon.name):append(chat.message(string.format('Coverage index: Ambuscade V1 %d, Ambuscade V2 %d, HTMB %d (%d total encounters).', c.ambu1, c.ambu2, c.htmb, c.total))));
+    print(chat.header(addon.name):append(chat.message(string.format('Coverage index: Ambuscade V1 %d, Ambuscade V2 %d, HTMB %d, Omen %d, Geas Fete %d (%d total encounters).', c.ambu1, c.ambu2, c.htmb, c.omen, c.geas, c.total))));
     print(chat.header(addon.name):append(chat.message(string.format('Currently actionable: %d ability/spell rules + %d encounter-state rules.', #(warn.rules.ability_rules or {}), #(warn.rules.state_rules or {})))));
 end
 

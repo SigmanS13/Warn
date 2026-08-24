@@ -7,12 +7,14 @@ local modules = {
     'generic.lua',
     'high_tier_battlefields.lua',
     'omen.lua',
+    'geas_fete.lua',
     'ambuscade_v1.lua',
     'ambuscade_v2.lua',
+    'ambuscade_v2_history.lua',
 };
 
 local result = {
-    version = 8,
+    version = 9,
     ability_rules = {},
     state_rules = {},
     catalog = {},

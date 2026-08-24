@@ -38,6 +38,8 @@ warn/
       generic.lua
       ambuscade_v1.lua
       ambuscade_v2.lua
+      ambuscade_v2_history.lua
+      geas_fete.lua
       high_tier_battlefields.lua
       omen.lua
       COVERAGE.md
@@ -150,10 +152,11 @@ Current shipped rules are a verified starter set, not a claim of complete FFXI c
 Rules should preserve source/provenance metadata and should not guess whether a move is
 stunnable, silenceable, avoidable, etc.
 
-The v2.4 bundled database contains **211 ability/spell rules, 9 encounter-state rules, and
-130 indexed encounter entries**. Omen is represented by all three Glassy mid-bosses and all
-six Caturae bosses. HTMB includes direct rules for 28 of 30 indexed categories; **Head Wind**
-and **Legacy of the Lost** remain indexed research targets rather than receiving guessed alerts.
+The v2.5 bundled database contains **267 ability/spell rules, 14 encounter-state rules, and
+215 indexed encounter entries**. Historical Ambuscade Volume 2 has 54 actionable families out
+of 67 indexed families. All 30 indexed HTMB categories have direct rules or inherited actor rules,
+and all 85 encounters on the Geas Fete Aeonic route are indexed. Geas Fete's initial actionable
+set concentrates on Warder of Courage and the seven Reisenjima HELMs.
 
 ## Job-specific counters
 
@@ -185,16 +188,30 @@ evidence unless the player explicitly enables a Custom Watch.
 The Custom Watches catalog is populated from Ashita's local monster-ability resources. The
 packaged `data/abilities.txt` list is retained only as an offline compatibility fallback.
 
+## v2.5 database expansion
+
+Historical Ambuscade Volume 2 now has 54 actionable encounter families. Thirty-one formerly
+catalog-only battles gained verified mechanics; the remaining 13 stay visible as research targets
+without generating speculative alerts.
+
+Head Wind and Legacy of the Lost complete the remaining HTMB research pass. Divine Might continues
+to reuse the five Ark Angel actor profiles, so those alerts work in both the individual battles and
+the combined battlefield.
+
+Geas Fete now includes a complete 85-encounter Aeonic-route index across Escha - Zi'Tah, Escha -
+Ru'Aun, and Reisenjima. The first 24 actionable rules cover Warder of Courage and all seven
+Reisenjima HELMs; lower-tier Geas encounters remain indexed for careful future curation.
+
 ## v2.4 encounter expansion
 
-Omen now has a dedicated data module covering Glassy Craver, Glassy Gorger, Glassy Thinker,
+Omen has a dedicated data module covering Glassy Craver, Glassy Gorger, Glassy Thinker,
 Fu, Kyou, Kei, Gin, Kin, and Ou. Scripted HP-gate mechanics are labeled separately from
 ordinary reactive TP moves so the interface does not present uncertain behavior as a timer.
 
-The Shadow Lord profile now warns for both immunity switches plus Giga Slash, Bowels of Agony,
+The Shadow Lord profile warns for both immunity switches plus Giga Slash, Bowels of Agony,
 Implosion, and Firaja. Because incoming action packets are independent of chat formatting,
 Implosion can be recognized even though its action name is not printed in the normal battle log.
-Puppet in Peril now covers Lancelord Gaheel Ja's most actionable documented mechanics.
+Puppet in Peril covers Lancelord Gaheel Ja's most actionable documented mechanics.
 
 
 

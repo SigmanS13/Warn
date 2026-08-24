@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.5.0
+- Expanded historical **Ambuscade Volume 2** from 23 to **54 actionable encounter families**. The new history module adds 27 verified ability alerts and 5 state alerts across 31 previously catalog-only encounters.
+- Kept 13 sparsely documented historical Volume 2 encounters indexed but non-actionable rather than inventing mechanics or responses.
+- Completed direct **High-Tier Mission Battlefield** coverage with Head Wind and Legacy of the Lost. All 30 indexed HTMB categories now have direct rules or, for Divine Might, inherited Ark Angel actor rules.
+- Added the complete **Geas Fete Aeonic route** as 85 indexed encounters: 25 in Escha - Zi'Tah, 32 in Escha - Ru'Aun, and 28 in Reisenjima.
+- Added 24 verified high-impact Geas Fete alerts for Warder of Courage and the seven Reisenjima HELMs: Albumen, Erinys, Onychophora, Schah, Teles, Vinipata, and Zerde.
+- Added regression checks for historical Ambuscade coverage, Geas Fete catalog completeness, verification metadata, role-aware HTMB counters, and database-wide unique IDs.
+- The bundled database now contains **267 ability/spell rules, 14 encounter-state rules, and 215 indexed encounter entries**.
+
 ## 2.4.0
 - Added the first complete **Omen** content module: Glassy Craver, Glassy Gorger, Glassy Thinker, Fu, Kyou, Kei, Gin, Kin, and Ou.
 - Added 27 verified Omen alerts covering documented reactive mechanics and fixed HP-gated sequences, including Pain Sync, Dancing Fullers, Unfaltering Bravado, Target / Eleventh Dimension, and Prophylaxis.
