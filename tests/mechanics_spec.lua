@@ -12,6 +12,11 @@ assert_equal(whm.cleanse, true, 'WHM cleanse default');
 assert_equal(whm.interrupt, false, 'WHM interrupt default');
 assert_equal(mechanics.responsibilities[1].id, 'tank', 'primary role ordering');
 assert_equal(mechanics.responsibilities[1].group, 'role', 'primary role grouping');
+assert_equal(mechanics.responsibilities[1].icon, 'shield', 'Tank shield glyph');
+assert_equal(mechanics.responsibilities[2].icon, 'syringe', 'Primary Healer syringe glyph');
+assert_equal(mechanics.responsibilities[3].label, 'Damage Dealer', 'Damage Dealer visible label');
+assert_equal(mechanics.responsibilities[3].icon, 'weapons', 'Damage Dealer weapons glyph');
+assert_equal(mechanics.responsibilities[4].icon, 'dice', 'Support dice glyph');
 assert_equal(mechanics.responsibilities[5].id, 'cleanse', 'assignment ordering');
 assert_equal(mechanics.responsibilities[5].group, 'assignment', 'assignment grouping');
 

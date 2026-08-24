@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.1
+- Reworked the Roles glyphs from the supplied visual references as native Warn vector art rather than importing their source pixels.
+- Tank now uses a sculpted shield; Primary Healer uses a diagonal syringe; Damage Dealer uses a crossed sword and magical staff; Support uses overlapping dice.
+- Reduced the medical cross on Support to a small rear-die mark and added five unmistakable pips to the foreground die.
+- Renamed the visible **Damage** role to **Damage Dealer** without changing its saved profile identifier.
+
 ## 2.3.0
 - Rebuilt live warning cards around an ornate Vana'diel frame with a stepped silhouette, twin brass rails, engraved corner strokes, and center/side diamond details.
 - Added a compact Warn crest, stronger title hierarchy, and balanced severity/prediction labels to distinguish alerts from stock ImGui panels.

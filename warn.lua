@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '2.3.0';
+addon.version   = '2.3.1';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -4588,39 +4588,83 @@ local function draw_role_icon(icon, x, y, size)
     local draw = imgui.GetWindowDrawList();
     local color = imgui.GetColorU32((warn.ui.theme and warn.ui.theme.brass_hover) or { 1.0, 0.84, 0.50, 1.0 });
     local dim = imgui.GetColorU32((warn.ui.theme and warn.ui.theme.brass_dim) or { 0.55, 0.45, 0.25, 1.0 });
+    local accent = imgui.GetColorU32((warn.ui.theme and warn.ui.theme.important) or { 0.30, 0.68, 1.0, 1.0 });
+    local panel = imgui.GetColorU32((warn.ui.theme and warn.ui.theme.panel_alt) or { 0.05, 0.095, 0.19, 1.0 });
     local thickness = math.max(1, get_ui_scale() * 1.5);
+    local fine = math.max(1, get_ui_scale());
 
     if (icon == 'shield') then
-        draw:AddLine({ x + 3, y + 3 }, { x + size - 3, y + 3 }, color, thickness);
-        draw:AddLine({ x + 3, y + 3 }, { x + 5, y + size - 7 }, color, thickness);
-        draw:AddLine({ x + size - 3, y + 3 }, { x + size - 5, y + size - 7 }, color, thickness);
-        draw:AddLine({ x + 5, y + size - 7 }, { x + size / 2, y + size - 2 }, color, thickness);
-        draw:AddLine({ x + size - 5, y + size - 7 }, { x + size / 2, y + size - 2 }, color, thickness);
-        draw:AddLine({ x + size / 2, y + 5 }, { x + size / 2, y + size - 5 }, dim, thickness);
-    elseif (icon == 'healing') then
-        draw:AddCircle({ x + size / 2, y + size / 2 }, size * 0.43, dim, 24, thickness);
-        draw:AddRectFilled({ x + size * 0.42, y + size * 0.20 }, { x + size * 0.58, y + size * 0.80 }, color, 1);
-        draw:AddRectFilled({ x + size * 0.20, y + size * 0.42 }, { x + size * 0.80, y + size * 0.58 }, color, 1);
-    elseif (icon == 'damage') then
-        draw:AddLine({ x + 4, y + size - 3 }, { x + size - 5, y + 4 }, color, thickness + 0.5);
-        draw:AddLine({ x + size - 8, y + 3 }, { x + size - 2, y + 8 }, color, thickness);
-        draw:AddLine({ x + size - 8, y + 3 }, { x + size - 11, y + 10 }, color, thickness);
-        draw:AddLine({ x + size - 2, y + 8 }, { x + size - 11, y + 10 }, color, thickness);
-        draw:AddLine({ x + 3, y + 4 }, { x + size - 4, y + size - 3 }, dim, thickness);
-        draw:AddCircleFilled({ x + 3, y + 4 }, 2.5, color, 12);
-    elseif (icon == 'support') then
-        draw:AddRect({ x + 3, y + 5 }, { x + size - 6, y + size - 2 }, dim, 2, 0, thickness);
-        draw:AddRect({ x + 7, y + 2 }, { x + size - 2, y + size - 5 }, color, 2, 0, thickness);
-        draw:AddLine({ x + 10, y + 6 }, { x + size - 6, y + size - 9 }, color, thickness);
-        draw:AddLine({ x + size - 6, y + 6 }, { x + 10, y + size - 9 }, color, thickness);
+        local outline = {
+            { x + size * 0.16, y + size * 0.12 }, { x + size * 0.84, y + size * 0.12 },
+            { x + size * 0.78, y + size * 0.66 }, { x + size * 0.50, y + size * 0.91 },
+            { x + size * 0.22, y + size * 0.66 },
+        };
+        draw_line_path(draw, outline, color, thickness, true);
+        draw:AddLine({ x + size * 0.50, y + size * 0.17 },
+            { x + size * 0.50, y + size * 0.82 }, dim, thickness);
+        draw:AddLine({ x + size * 0.24, y + size * 0.24 },
+            { x + size * 0.50, y + size * 0.17 }, dim, fine);
+        draw:AddLine({ x + size * 0.50, y + size * 0.17 },
+            { x + size * 0.76, y + size * 0.24 }, color, fine);
+    elseif (icon == 'syringe') then
+        -- Diagonal syringe with a bright brass barrel and a small blue fluid chamber.
+        draw:AddLine({ x + size * 0.23, y + size * 0.78 },
+            { x + size * 0.72, y + size * 0.29 }, dim, thickness + 3 * get_ui_scale());
+        draw:AddLine({ x + size * 0.23, y + size * 0.78 },
+            { x + size * 0.72, y + size * 0.29 }, color, thickness + get_ui_scale());
+        draw:AddLine({ x + size * 0.42, y + size * 0.59 },
+            { x + size * 0.57, y + size * 0.44 }, accent, thickness + get_ui_scale());
+        draw:AddLine({ x + size * 0.66, y + size * 0.22 },
+            { x + size * 0.80, y + size * 0.36 }, color, thickness);
+        draw:AddLine({ x + size * 0.15, y + size * 0.70 },
+            { x + size * 0.31, y + size * 0.86 }, color, thickness);
+        draw:AddLine({ x + size * 0.76, y + size * 0.25 },
+            { x + size * 0.94, y + size * 0.07 }, dim, fine);
+        draw:AddCircleFilled({ x + size * 0.95, y + size * 0.06 }, math.max(1, size * 0.035), color, 10);
+    elseif (icon == 'weapons') then
+        -- Sword and staff cross as separate physical and magical damage silhouettes.
+        draw:AddLine({ x + size * 0.18, y + size * 0.84 },
+            { x + size * 0.76, y + size * 0.20 }, color, thickness + get_ui_scale());
+        draw_line_path(draw, {
+            { x + size * 0.76, y + size * 0.20 }, { x + size * 0.95, y + size * 0.05 },
+            { x + size * 0.86, y + size * 0.29 },
+        }, color, thickness, true);
+        draw:AddLine({ x + size * 0.12, y + size * 0.71 },
+            { x + size * 0.29, y + size * 0.88 }, color, thickness);
+        draw:AddLine({ x + size * 0.09, y + size * 0.08 },
+            { x + size * 0.86, y + size * 0.89 }, dim, thickness);
+        draw:AddCircleFilled({ x + size * 0.10, y + size * 0.09 }, size * 0.105, accent, 16);
+        draw:AddCircle({ x + size * 0.10, y + size * 0.09 }, size * 0.125, color, 16, fine);
+        draw:AddCircleFilled({ x + size * 0.86, y + size * 0.89 }, size * 0.06, color, 12);
+    elseif (icon == 'dice') then
+        -- The rear die carries a restrained support cross; the foreground die keeps clear pips.
+        draw:AddRectFilled({ x + size * 0.08, y + size * 0.08 },
+            { x + size * 0.62, y + size * 0.62 }, panel, 2 * get_ui_scale());
+        draw:AddRect({ x + size * 0.08, y + size * 0.08 },
+            { x + size * 0.62, y + size * 0.62 }, dim, 2 * get_ui_scale(), 0, thickness);
+        local cross_x = x + size * 0.33;
+        local cross_y = y + size * 0.31;
+        draw:AddLine({ cross_x - size * 0.09, cross_y }, { cross_x + size * 0.09, cross_y }, accent, thickness);
+        draw:AddLine({ cross_x, cross_y - size * 0.09 }, { cross_x, cross_y + size * 0.09 }, accent, thickness);
+
+        draw:AddRectFilled({ x + size * 0.38, y + size * 0.34 },
+            { x + size * 0.94, y + size * 0.91 }, panel, 2 * get_ui_scale());
+        draw:AddRect({ x + size * 0.38, y + size * 0.34 },
+            { x + size * 0.94, y + size * 0.91 }, color, 2 * get_ui_scale(), 0, thickness);
+        local pip = math.max(1, size * 0.045);
+        draw:AddCircleFilled({ x + size * 0.50, y + size * 0.46 }, pip, color, 10);
+        draw:AddCircleFilled({ x + size * 0.82, y + size * 0.46 }, pip, color, 10);
+        draw:AddCircleFilled({ x + size * 0.66, y + size * 0.63 }, pip, accent, 10);
+        draw:AddCircleFilled({ x + size * 0.50, y + size * 0.79 }, pip, color, 10);
+        draw:AddCircleFilled({ x + size * 0.82, y + size * 0.79 }, pip, color, 10);
     end
 end
 
 local function render_role_choice(definition, profile)
     local cursor_x, cursor_y = imgui.GetCursorScreenPos();
     if (definition.icon ~= nil) then
-        draw_role_icon(definition.icon, cursor_x + 1, cursor_y, 22 * get_ui_scale());
-        imgui.SetCursorPosX(imgui.GetCursorPosX() + (30 * get_ui_scale()));
+        draw_role_icon(definition.icon, cursor_x + 1, cursor_y - 1, 24 * get_ui_scale());
+        imgui.SetCursorPosX(imgui.GetCursorPosX() + (33 * get_ui_scale()));
     end
     local enabled = profile[definition.id] == true;
     if (imgui.Checkbox(definition.label .. '##responsibility_' .. definition.id, { enabled })) then
@@ -4629,6 +4673,7 @@ local function render_role_choice(definition, profile)
     end
     imgui.SameLine();
     imgui.TextColored({ 0.62, 0.66, 0.72, 1.0 }, definition.description);
+    imgui.Spacing();
 end
 
 local function render_responsibility_options()
