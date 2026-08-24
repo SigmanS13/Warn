@@ -88,6 +88,7 @@ local update = {
     ability_rules = {
         {
             id = 'existing_rule', content = 'Test', encounter = 'Updated', actor = 'Boss',
+            actor_aliases = { 'Boss Prime' },
             event = 'readies', ability = 'Move', message = 'UPDATED', severity = 'danger',
             prediction = 'reactive', target_shape = 'cone', audience = { 'everyone' },
             counter = { type = 'spell', name = 'Stun', label = 'STUN!', responsibility = 'interrupt' },
@@ -109,6 +110,7 @@ local merged = community.merge({
 assert_equal(#merged.ability_rules, 2, 'merge rule count');
 assert_equal(merged.ability_rules[1].message, 'UPDATED', 'stable id replaced');
 assert_equal(merged.ability_rules[1].target_shape, 'cone', 'classification metadata retained');
+assert_equal(merged.ability_rules[1].actor_aliases[1], 'Boss Prime', 'actor alias retained');
 assert_equal(merged.ability_rules[1].counter.responsibility, 'interrupt', 'counter responsibility retained');
 assert_equal(merged.ability_rules[2].id, 'new_rule', 'new rule appended');
 

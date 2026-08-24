@@ -44,6 +44,9 @@ warn/
       omen.lua
       sortie.lua
       odyssey.lua
+      skirmish.lua
+      unity_wanted.lua
+      vagary.lua
       COVERAGE.md
   sounds/
     *.wav
@@ -161,11 +164,47 @@ Current shipped rules are a verified starter set, not a claim of complete FFXI c
 Rules should preserve source/provenance metadata and should not guess whether a move is
 stunnable, silenceable, avoidable, etc.
 
-The v2.6 bundled database contains **335 ability/spell rules, 16 encounter-state rules, and
-300 indexed encounter entries**. Historical Ambuscade Volume 2 has 54 actionable families out
+The v2.8 bundled database contains **442 ability/spell rules, 24 encounter-state rules, and
+430 indexed encounter entries**. Historical Ambuscade Volume 2 has 54 actionable families out
 of 67 indexed families. All 30 indexed HTMB categories have direct rules or inherited actor rules,
 and all 85 encounters on the Geas Fete Aeonic route are indexed. Sortie includes all 17 named
 sector NMs and bosses. Odyssey includes 67 named Sheol/Gaol NMs plus the shared Mimic hazard.
+
+## v2.8 Skirmish, Unity Wanted, and Vagary
+
+Skirmish now indexes 21 original and Alluvion objectives/NMs. Its first verified layer covers
+Rala's potent poison and petrification risks, the four documented Cirdas Mistmaws, and Yorcia's
+Stronghold-defense objective. Later Mistmaws with sparse documentation remain indexed-only.
+
+Unity Wanted now has all 56 Wanted NMs organized by level and Wanted category. Twenty-nine alerts
+cover the most actionable documented mechanics, including hate resets, Charm, Doom, mine detonation,
+buff/food removal, lethal breath attacks, Fulmination, and Tumult Curator's multi-phase threats.
+
+Vagary indexes Palloritus, Putraxia, Rancibus, Perfidien, and Plouton. Its 28 alerts cover Doom,
+Death, debilitating auras, full dispels, hate resets, and the documented elemental-response modes
+for both hidden mega bosses. Putraxia also receives a once-per-spawn explanation of its initial
+elemental absorption system.
+
+## v2.7 Dynamis, Sinister Reign, and Geas Gods
+
+Classic Dynamis now has a focused 26-entry progression-boss index spanning all ten zones: city,
+Beaucedine, Xarcabard, Dreamworld, and Tavnazia bosses plus their Arch counterparts. Its initial
+alerts emphasize instant-death, Terror, Charm, severe breath, buff-wipe, and Diabolos mechanics.
+
+Dynamis - Divergence indexes all twelve Wave 1-3 bosses across the four cities plus Aurix. Direct
+alerts cover the four Wave 2 bosses, while Wave 3 Disjoined bosses remind the alliance to clear
+elemental circles before committing damage. These are kept separate from classic Dynamis in the
+browser because their encounter structure and preparation needs are different.
+
+Sinister Reign indexes all nine possible opponents by wave. Verified rules cover Darrcuiln,
+Ingrid, all three Wave 2 opponents, and all three Wave 3 opponents, including Arciela's mode
+switches and Naakual summon, Rosulatia's Charm sequence, Sajj'aka's Denounce, and August's
+Daybreak / No Quarter sequence.
+
+Geas Fete retains its complete 85-entry Aeonic index and adds Zi'Tah HELM and Ru'Aun god alerts:
+the Alpluachra Pixie trio, Pazuzu, Wrathare, Byakko, Genbu, Seiryu, Suzaku, and Kirin/Kouryu. Blazewing stays
+indexed-only because the currently documented proc behavior is not reliable enough for a confident
+player-facing instruction.
 
 ## Job-specific counters
 

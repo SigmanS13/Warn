@@ -130,6 +130,7 @@ local function common_rule_fields(source, prefix)
     result.encounter, err = string_field(source.encounter, prefix .. '.encounter', true, 160); if (result.encounter == nil) then return fail(err); end
     result.group, err = string_field(source.group, prefix .. '.group', false, 128); if (result.group == nil and err ~= nil) then return fail(err); end
     result.actor, err = string_field(source.actor, prefix .. '.actor', false, 128); if (result.actor == nil and err ~= nil) then return fail(err); end
+    result.actor_aliases, err = string_array(source.actor_aliases, prefix .. '.actor_aliases', 16, 128); if (result.actor_aliases == nil and err ~= nil) then return fail(err); end
     result.message, err = string_field(source.message, prefix .. '.message', true, 512); if (result.message == nil) then return fail(err); end
     result.severity, err = string_field(source.severity, prefix .. '.severity', true, 24); if (result.severity == nil) then return fail(err); end
     if (not allowedSeverities[result.severity]) then return fail(prefix .. '.severity is unsupported'); end

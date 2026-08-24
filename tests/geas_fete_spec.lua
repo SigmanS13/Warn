@@ -7,7 +7,7 @@ local function assert_equal(actual, expected, label)
 end
 
 assert_equal(#(geas.encounters or {}), 85, 'complete Aeonic Geas Fete catalog');
-assert_equal(#(geas.ability_rules or {}), 24, 'verified Geas Fete alert count');
+assert_equal(#(geas.ability_rules or {}), 34, 'verified Geas Fete alert count');
 
 local zone_counts = { zitah=0, ruaun=0, reisenjima=0 };
 for _, entry in ipairs(geas.encounters or {}) do

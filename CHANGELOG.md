@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.8.0
+- Added a 21-entry original and Alluvion Skirmish index with six verified action alerts and two encounter-state warnings. Sparsely documented Mistmaws remain safely indexed-only.
+- Added the complete 56-NM Unity Wanted roster, grouped by content level and Wanted category, plus 29 high-impact alerts and a live Goblin Mine proximity warning.
+- Added all five Vagary mega bosses with 28 verified alerts and one Putraxia preparation warning. Perfidien and Plouton now surface their documented elemental-response modes without presenting them as timers.
+- Extended `/warn coverage` to report Skirmish, Unity Wanted, and Vagary independently.
+- Added dedicated regression coverage for the three new modules. The bundled database now contains **442 ability/spell rules, 24 encounter-state rules, and 430 indexed encounter entries**.
+
+## 2.7.0
+- Added a 26-entry classic Dynamis progression-boss catalog covering all ten zones and their principal/Arch encounters, with 11 verified high-impact alerts.
+- Added all twelve Wave 1-3 Dynamis - Divergence bosses plus Aurix. Five action alerts cover the four Wave 2 bosses, and four state alerts explain the elemental-circle requirement when a Disjoined Wave 3 boss appears.
+- Added the complete nine-encounter Sinister Reign roster and 18 verified alerts spanning its three waves, including scripted follow-ups and Arciela's Naakual mechanics.
+- Expanded Geas Fete from 24 to 34 verified alerts with Zi'Tah HELMs, the four Ru'Aun Heavenly Beasts, and Kirin/Kouryu.
+- Added alternate actor-name matching so one verified rule can safely cover named forms of the same encounter, such as the eight Dynamis-Tavnazia Diabolos variants and the Zi'Tah Pixie trio.
+- Split `/warn coverage` across readable lines as the encounter database grows. The bundled database now contains **379 ability/spell rules, 20 encounter-state rules, and 348 indexed encounter entries**.
+
 ## 2.6.2
 - Fixed an Ashita/SugarMath compatibility crash in the responsive encounter-pane sizing code. Numeric and named ImGui vector layouts are now probed independently inside protected calls, so unsupported `.x` lookup behavior cannot escape into `d3d_present`.
 

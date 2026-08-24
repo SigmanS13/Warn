@@ -14,6 +14,12 @@ Warn's encounter knowledge is intentionally kept outside `warn.lua` so the datab
 - `sortie.lua` — complete Sortie NM/boss index and verified major-boss mechanics
 - `odyssey.lua` — complete named Sheol/Gaol NM index and verified high-impact Gaol rules
 - `geas_fete.lua` — complete Aeonic-route Geas Fete index and verified high-impact rules
+- `dynamis.lua` — classic Dynamis progression-boss index and lethal boss mechanics
+- `dynamis_divergence.lua` — four-zone, three-wave Divergence boss index and mechanics
+- `sinister_reign.lua` — complete three-wave Sinister Reign roster and mechanics
+- `skirmish.lua` — original/Alluvion Skirmish objective and NM index with documented mechanics
+- `unity_wanted.lua` — complete Unity Wanted roster and high-impact NM mechanics
+- `vagary.lua` — five Vagary mega bosses, elemental responses, and lethal mechanics
 - `COVERAGE.md` — progress tracker and research queue
 
 `../rules.lua` loads these modules and merges their `ability_rules`, `state_rules`, and catalog entries.
@@ -32,6 +38,7 @@ Common fields:
     content   = 'Ambuscade',
     encounter = 'Example Encounter',
     actor     = 'Example Boss',       -- nil for a genuinely generic mechanic
+    actor_aliases = { 'Boss Form II' }, -- optional alternate actor names
     event     = 'readies',            -- readies / uses / starts_casting / casts
     ability   = 'Example Ability',
     aliases   = { 'Old Name' },       -- optional log/resource aliases

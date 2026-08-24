@@ -10,13 +10,19 @@ local modules = {
     'sortie.lua',
     'odyssey.lua',
     'geas_fete.lua',
+    'dynamis.lua',
+    'dynamis_divergence.lua',
+    'sinister_reign.lua',
+    'skirmish.lua',
+    'unity_wanted.lua',
+    'vagary.lua',
     'ambuscade_v1.lua',
     'ambuscade_v2.lua',
     'ambuscade_v2_history.lua',
 };
 
 local result = {
-    version = 10,
+    version = 12,
     ability_rules = {},
     state_rules = {},
     catalog = {},

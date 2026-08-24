@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '2.6.2';
+addon.version   = '2.8.0';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -1350,6 +1350,15 @@ local function raw_message_has_actor(message, actor)
     return message:lower():find(actor:lower(), 1, true) ~= nil;
 end
 
+local function raw_message_matches_rule_actor(message, rule)
+    if (rule.actor == nil) then return true; end
+    if (raw_message_has_actor(message, rule.actor)) then return true; end
+    for _, alias in ipairs(rule.actor_aliases or {}) do
+        if (raw_message_has_actor(message, tostring(alias))) then return true; end
+    end
+    return false;
+end
+
 local function find_context_ability_rule(eventType, abilityName, rawMessage)
     if (not warn.settings.context.enabled or abilityName == nil or abilityName == '') then
         return nil;
@@ -1371,7 +1380,7 @@ local function find_context_ability_rule(eventType, abilityName, rawMessage)
         end
         if (eventMatches and abilityMatches) then
             if (rule.actor ~= nil) then
-                if (raw_message_has_actor(rawMessage, rule.actor)) then
+                if (raw_message_matches_rule_actor(rawMessage, rule)) then
                     return rule;
                 end
             elseif (generic == nil) then
@@ -2321,7 +2330,12 @@ local function flush_debuff_loss_batch()
         end
         if (#events > 4) then table.insert(lines, '...'); end
         local anyAssigned = false;
-        for _, event in ipairs(events) do if (event.assigned) then anyAssigned = true; break; end end
+        for _, event in ipairs(events) do
+            if (event.assigned) then
+                anyAssigned = true;
+                break
+            end
+        end
         if (anyAssigned) then table.insert(lines, 'CHECK CONTROL / REAPPLY!'); end
         text = table.concat(lines, '\n');
         sound = warn.settings.sound.selected;
@@ -3105,7 +3119,7 @@ local function update_state_rules()
 end
 
 local function get_catalog_counts()
-    local counts = { total = 0, ambu1 = 0, ambu2 = 0, htmb = 0, omen = 0, geas = 0, sortie = 0, odyssey = 0 };
+    local counts = { total = 0, ambu1 = 0, ambu2 = 0, htmb = 0, omen = 0, geas = 0, sortie = 0, odyssey = 0, dynamis = 0, divergence = 0, sinister = 0, skirmish = 0, unity = 0, vagary = 0 };
     for _, entry in ipairs(warn.rules.catalog or {}) do
         counts.total = counts.total + 1;
         if (entry.content == 'Ambuscade' and entry.group == 'Volume 1') then counts.ambu1 = counts.ambu1 + 1; end
@@ -3115,6 +3129,12 @@ local function get_catalog_counts()
         if (entry.content == 'Geas Fete') then counts.geas = counts.geas + 1; end
         if (entry.content == 'Sortie') then counts.sortie = counts.sortie + 1; end
         if (entry.content == 'Odyssey') then counts.odyssey = counts.odyssey + 1; end
+        if (entry.content == 'Dynamis') then counts.dynamis = counts.dynamis + 1; end
+        if (entry.content == 'Dynamis - Divergence') then counts.divergence = counts.divergence + 1; end
+        if (entry.content == 'Sinister Reign') then counts.sinister = counts.sinister + 1; end
+        if (entry.content == 'Skirmish') then counts.skirmish = counts.skirmish + 1; end
+        if (entry.content == 'Unity Wanted') then counts.unity = counts.unity + 1; end
+        if (entry.content == 'Vagary') then counts.vagary = counts.vagary + 1; end
     end
     return counts;
 end
@@ -3123,12 +3143,14 @@ local function print_rule_summary()
     local a = #(warn.rules.ability_rules or {});
     local st = #(warn.rules.state_rules or {});
     local c = get_catalog_counts();
-    print(chat.header(addon.name):append(chat.message(string.format('Loaded %d action rules + %d state rules. Indexed encounters: %d (Ambuscade V1 %d / V2 %d, HTMB %d, Omen %d, Geas %d, Sortie %d, Odyssey %d). Player: %s', a, st, c.total, c.ambu1, c.ambu2, c.htmb, c.omen, c.geas, c.sortie, c.odyssey, get_player_job_text()))));
+    print(chat.header(addon.name):append(chat.message(string.format('Loaded %d action rules + %d state rules across %d indexed encounters. Player: %s', a, st, c.total, get_player_job_text()))));
 end
 
 local function print_coverage_summary()
     local c = get_catalog_counts();
-    print(chat.header(addon.name):append(chat.message(string.format('Coverage index: Ambuscade V1 %d, V2 %d, HTMB %d, Omen %d, Geas %d, Sortie %d, Odyssey %d (%d total).', c.ambu1, c.ambu2, c.htmb, c.omen, c.geas, c.sortie, c.odyssey, c.total))));
+    print(chat.header(addon.name):append(chat.message(string.format('Coverage: Ambuscade V1 %d / V2 %d, HTMB %d, Omen %d, Geas %d, Sortie %d, Odyssey %d.', c.ambu1, c.ambu2, c.htmb, c.omen, c.geas, c.sortie, c.odyssey))));
+    print(chat.header(addon.name):append(chat.message(string.format('Coverage: Dynamis %d, Divergence %d, Sinister Reign %d.', c.dynamis, c.divergence, c.sinister))));
+    print(chat.header(addon.name):append(chat.message(string.format('Coverage: Skirmish %d, Unity Wanted %d, Vagary %d (%d total indexed encounters).', c.skirmish, c.unity, c.vagary, c.total))));
     print(chat.header(addon.name):append(chat.message(string.format('Currently actionable: %d ability/spell rules + %d encounter-state rules.', #(warn.rules.ability_rules or {}), #(warn.rules.state_rules or {})))));
 end
 
@@ -4089,7 +4111,12 @@ function render_context_tab()
 
     local selectedRule = find_context_rule_by_id(warn.selectedRuleId);
     local selectedVisible = false;
-    for _, rule in ipairs(visibleRules) do if (selectedRule == rule) then selectedVisible = true; break; end end
+    for _, rule in ipairs(visibleRules) do
+        if (selectedRule == rule) then
+            selectedVisible = true;
+            break
+        end
+    end
     if (not selectedVisible) then selectedRule = visibleRules[1]; warn.selectedRuleId = selectedRule and selectedRule.id or nil; end
     render_rule_detail(selectedRule);
     imgui.EndChild();
