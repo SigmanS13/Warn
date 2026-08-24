@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.6.2
+- Fixed an Ashita/SugarMath compatibility crash in the responsive encounter-pane sizing code. Numeric and named ImGui vector layouts are now probed independently inside protected calls, so unsupported `.x` lookup behavior cannot escape into `d3d_present`.
+
 ## 2.6.1
 - Rebuilt the encounter-category pane with persistent per-content collapse controls plus **Collapse All** and **Expand All** actions.
 - Added verified-alert counts to content and group labels so populated sections can be identified at a glance.

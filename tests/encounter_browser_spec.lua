@@ -18,6 +18,19 @@ local rules = {
 };
 local categories = browser.build_categories(catalog, rules, function (rule) return rule.group; end);
 
+local sugar_math_vector = setmetatable({ [1] = 512 }, {
+    __index = function (_, key) error('Math namespace does not contain a definition for: ' .. tostring(key)); end,
+});
+local named_vector = setmetatable({}, {
+    __index = function (_, key)
+        if (key == 'x') then return 640; end
+        return nil;
+    end,
+});
+assert_equal(browser.vector_width(sugar_math_vector, 800), 512, 'SugarMath numeric vector width');
+assert_equal(browser.vector_width(named_vector, 800), 640, 'named vector width');
+assert_equal(browser.vector_width(nil, 900), 900, 'vector width fallback');
+
 assert_equal(#categories, 1, 'category count');
 assert_equal(categories[1].indexed_count, 3, 'indexed encounter count');
 assert_equal(categories[1].rule_count, 2, 'verified rule count');

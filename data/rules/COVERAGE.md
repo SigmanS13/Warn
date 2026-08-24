@@ -1,4 +1,4 @@
-# Warn encounter database coverage — v2.6.1
+# Warn encounter database coverage — v2.6.2
 
 This file tracks **index coverage** separately from **verified actionable-rule coverage**. An encounter being indexed means Warn knows it belongs in the research set; it does **not** imply every mechanic has been verified yet.
 

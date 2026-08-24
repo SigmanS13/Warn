@@ -3,6 +3,20 @@
 
 local M = {};
 
+function M.vector_width(size, default_width)
+    if (size ~= nil) then
+        local width = nil;
+        local indexed_ok, indexed_value = pcall(function () return size[1]; end);
+        if (indexed_ok) then width = tonumber(indexed_value); end
+        if (width == nil) then
+            local named_ok, named_value = pcall(function () return size.x; end);
+            if (named_ok) then width = tonumber(named_value); end
+        end
+        if (width ~= nil and width > 0) then return width; end
+    end
+    return tonumber(default_width) or 800;
+end
+
 function M.build_categories(catalog, rules, get_rule_group)
     local map = {};
 

@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '2.6.1';
+addon.version   = '2.6.2';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -3930,8 +3930,10 @@ local function get_available_content_width(default_width)
     if (type(imgui.GetContentRegionAvail) == 'function') then
         local ok, size = pcall(imgui.GetContentRegionAvail);
         if (ok and size ~= nil) then
-            local width = tonumber(size.x or size[1]);
-            if (width ~= nil and width > 0) then return width; end
+            -- Ashita builds expose ImGui vectors through different wrappers. SugarMath's
+            -- numeric vector rejects unknown named fields instead of returning nil, so every
+            -- access must be isolated rather than using `size.x or size[1]`.
+            return encounterBrowser.vector_width(size, default_width);
         end
     end
     return tonumber(default_width) or 800;
