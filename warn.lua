@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '3.1.1';
+addon.version   = '3.1.3';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -60,6 +60,25 @@ local magicBurstMessages = {
 };
 
 local COMMUNITY_MANIFEST_URL = 'https://raw.githubusercontent.com/SigmanS13/Warn/main/community/manifest.json';
+
+-- Ashita's XInput button IDs. Keep these named so controller mappings do not
+-- drift back toward DirectInput or platform-specific button numbers.
+local XINPUT_BUTTON = {
+    DPAD_UP    = 0,
+    DPAD_DOWN  = 1,
+    DPAD_LEFT  = 2,
+    DPAD_RIGHT = 3,
+    START      = 4,
+    BACK       = 5,
+    L3         = 6,
+    R3         = 7,
+    LB         = 8,
+    RB         = 9,
+    A          = 12,
+    B          = 13,
+    X          = 14,
+    Y          = 15,
+};
 
 ffi.cdef[[
     int __stdcall URLDownloadToFileA(void* caller, const char* url, const char* filename, unsigned int reserved, void* callback);
@@ -6434,9 +6453,9 @@ function guiOps.get_controller_toggle_buttons(source)
     if (chord == 'disabled') then return nil; end
     local mappings = {
         xinput = {
-            menu = { 15, 14 },       -- Back + Start
-            sticks = { 10, 13 },     -- L3 + R3
-            shoulders = { 8, 11 },   -- LB + RB
+            menu = { XINPUT_BUTTON.BACK, XINPUT_BUTTON.START },
+            sticks = { XINPUT_BUTTON.L3, XINPUT_BUTTON.R3 },
+            shoulders = { XINPUT_BUTTON.LB, XINPUT_BUTTON.RB },
         },
         playstation = {
             menu = { 56, 57 },       -- Create + Options
@@ -6483,9 +6502,10 @@ function guiOps.handle_controller_toggle_input(source, button, state)
     if (pressed and firstDown and secondDown and withinChordWindow and not warn.ui.controller_toggle_latched) then
         warn.ui.controller_toggle_latched = true;
         set_gui_open(not warn.isGuiOpen[1]);
-        return true;
     end
-    return false;
+    -- Consume either member while a toggle chord is in progress. This keeps a
+    -- shoulders chord from changing tabs before the second button is pressed.
+    return true;
 end
 
 function guiOps.handle_controller_action(action)
@@ -6614,8 +6634,13 @@ ashita.events.register('xinput_button', 'warn_xinput_button_cb', function (e)
     end
     if (state ~= 1) then return; end
     local actions = {
-        [6] = 'up', [7] = 'down', [5] = 'left', [4] = 'right',
-        [0] = 'close', [8] = 'tab_left', [11] = 'tab_right',
+        [XINPUT_BUTTON.DPAD_UP] = 'up',
+        [XINPUT_BUTTON.DPAD_DOWN] = 'down',
+        [XINPUT_BUTTON.DPAD_LEFT] = 'left',
+        [XINPUT_BUTTON.DPAD_RIGHT] = 'right',
+        [XINPUT_BUTTON.B] = 'close',
+        [XINPUT_BUTTON.LB] = 'tab_left',
+        [XINPUT_BUTTON.RB] = 'tab_right',
     };
     local action = actions[button];
     if (action ~= nil and guiOps.handle_controller_action(action)) then e.blocked = true; end

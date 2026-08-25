@@ -1,8 +1,14 @@
 # Changelog
 
+## 3.1.3
+- Fixed all dashboard dropdowns and other popup controls losing focus by focusing Warn only once when it opens instead of on every rendered frame.
+- Fixed XIUI integration commands being truncated to the single token `local`, which caused a Lua `'<name>' expected near '<eof>'` error when opening or closing Warn.
+
 ## 3.1.2
 - Fixed all dashboard dropdowns and other popup controls losing focus by focusing Warn only once when it opens instead of on every rendered frame.
 - Fixed XIUI integration commands being truncated to the single token `local`, which caused a Lua `'<name>' expected near '<eof>'` error when opening or closing Warn.
+- Fixed Ashita XInput IDs for D-pad navigation, B-to-close, tab shoulders, and all configurable toggle chords.
+- Consumed configured toggle-chord buttons while waiting for the second press so the LB + RB chord cannot change tabs accidentally.
 
 ## 3.1.1
 - Fixed XIUI hotbars briefly hiding and then reappearing over Warn by targeting XIUI's exact cached `modules.hotbar.init` instance for both suppression and restoration.
