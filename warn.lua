@@ -277,6 +277,7 @@ warn = T{
         launcher_texture = nil,
         role_textures = T{},
         xiui_hotbars_suppressed = false,
+        request_focus = false,
         controller_buttons_down = T{},
         controller_button_pressed_at = T{},
         controller_toggle_latched = false,
@@ -3844,20 +3845,22 @@ function set_xiui_hotbars_suppressed(suppressed)
 
     local command;
     if (shouldSuppress) then
-        command = "/addon exec xiui local o,m=pcall(require,'modules.hotbar.init');"
+        command = "local o,m=pcall(require,'modules.hotbar.init');"
             .. "if o and type(m.SetHidden)=='function' then "
             .. "if _WARN_DASHBOARD_HOTBAR_STATE==nil then local s={set_hidden=m.SetHidden,visible=m.visible~=false};"
             .. "_WARN_DASHBOARD_HOTBAR_STATE=s;m.SetHidden=function(h)return s.set_hidden(h or _WARN_DASHBOARD_HOTBAR_STATE~=nil);end;end;"
             .. "m.SetHidden(true);end";
     else
-        command = "/addon exec xiui local s=_WARN_DASHBOARD_HOTBAR_STATE;"
+        command = "local s=_WARN_DASHBOARD_HOTBAR_STATE;"
             .. "local o,m=pcall(require,'modules.hotbar.init');"
             .. "if s~=nil and o then m.SetHidden=s.set_hidden;_WARN_DASHBOARD_HOTBAR_STATE=nil;"
             .. "s.set_hidden(not s.visible);end";
     end
 
     local queued = pcall(function ()
-        AshitaCore:GetChatManager():QueueCommand(-1, command);
+        -- /addon exec treats the Lua source as one command argument. Quote it so
+        -- declarations such as "local o,m=..." are not truncated to "local".
+        AshitaCore:GetChatManager():QueueCommand(-1, '/addon exec xiui ' .. string.format('%q', command));
     end);
     if (queued) then warn.ui.xiui_hotbars_suppressed = shouldSuppress; end
 end
@@ -3870,6 +3873,9 @@ local function set_gui_open(open)
     local shouldOpen = (open == true);
     local isOpening = shouldOpen and warn.isGuiOpen[1] ~= true;
     warn.isGuiOpen[1] = shouldOpen;
+    if (isOpening) then
+        warn.ui.request_focus = true;
+    end
     sync_xiui_hotbars_with_dashboard();
     if (isOpening) then
         refresh_sound_files(false);
@@ -6291,8 +6297,11 @@ function render_config_window()
     end
     imgui.SetNextWindowSizeConstraints({ 720 * scale, 600 * scale, }, { FLT_MAX, FLT_MAX, });
     warn.ui.focus_api_available = (type(imgui.SetNextWindowFocus) == 'function') or (type(imgui.SetWindowFocus) == 'function');
-    if (warn.settings.ui.always_on_top and type(imgui.SetNextWindowFocus) == 'function') then
-        imgui.SetNextWindowFocus();
+    if (warn.ui.request_focus) then
+        if (warn.settings.ui.always_on_top and type(imgui.SetNextWindowFocus) == 'function') then
+            imgui.SetNextWindowFocus();
+        end
+        warn.ui.request_focus = false;
     end
     uiTheme.push(warn.ui.theme, scale);
     local flags = bit.bor(ImGuiWindowFlags_NoTitleBar, ImGuiWindowFlags_NoCollapse,

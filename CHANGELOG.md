@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.1.2
+- Fixed all dashboard dropdowns and other popup controls losing focus by focusing Warn only once when it opens instead of on every rendered frame.
+- Fixed XIUI integration commands being truncated to the single token `local`, which caused a Lua `'<name>' expected near '<eof>'` error when opening or closing Warn.
+
 ## 3.1.1
 - Fixed XIUI hotbars briefly hiding and then reappearing over Warn by targeting XIUI's exact cached `modules.hotbar.init` instance for both suppression and restoration.
 - Changed the fresh-install controller toggle chord to L3 + R3 across supported controller layouts; existing saved chord selections remain unchanged.
