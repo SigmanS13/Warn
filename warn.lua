@@ -4485,12 +4485,16 @@ function render_appearance_tab()
         end
     end
     imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 }, string.format('Resolved scale: %.2fx', get_ui_scale()));
-    if (imgui.Checkbox('Keep Warn Dashboard Above Other Addons', { ui.always_on_top })) then
+        if (imgui.Checkbox('Keep Warn Dashboard Above Other Addons', { ui.always_on_top })) then
         ui.always_on_top = not ui.always_on_top;
         save_settings();
     end
     imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 },
         'Enabled by default. Disable this when you need to interact with another addon over Warn.');
+    if (warn.ui.focus_api_available == false) then
+        imgui.TextColored({ 0.85, 0.35, 0.35, 1.0 },
+            'This Ashita build does not expose the ImGui focus API Warn needs for this option; it will have no effect here.');
+    end
 
     local themes = uiTheme.list(addon.path);
     local theme_index = 0;
@@ -6210,6 +6214,7 @@ function render_config_window()
         warn.guiSizeInitialized = true;
     end
     imgui.SetNextWindowSizeConstraints({ 720 * scale, 600 * scale, }, { FLT_MAX, FLT_MAX, });
+    warn.ui.focus_api_available = (type(imgui.SetNextWindowFocus) == 'function') or (type(imgui.SetWindowFocus) == 'function');
     if (warn.settings.ui.always_on_top and type(imgui.SetNextWindowFocus) == 'function') then
         imgui.SetNextWindowFocus();
     end
@@ -6219,6 +6224,10 @@ function render_config_window()
     -- Warn has its own close control and custom header. Passing a mutable open-state
     -- pointer can make some Ashita ImGui builds restore their native title bar.
     if (imgui.Begin('##warn_dashboard', true, flags)) then
+        if (warn.settings.ui.always_on_top and type(imgui.SetWindowFocus) == 'function') then
+            imgui.SetWindowFocus();
+        end
+        local window_x, window_y = imgui.GetWindowPos();
         local window_x, window_y = imgui.GetWindowPos();
         local window_width, window_height = imgui.GetWindowSize();
         local draw = imgui.GetWindowDrawList();
