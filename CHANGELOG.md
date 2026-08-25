@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.1.0
+- Fixed the always on top behavior.
+
 ## 3.0.9
 - Added a default-enabled **Keep Warn Dashboard Above Other Addons** option under Appearance. Warn requests foreground focus while its dashboard is open; the option can be disabled when another addon's controls need to appear over it.
 - Increased the fresh-install dashboard baseline from 1160×820 to 1320×1080 logical pixels, producing approximately the large layout shown at automatic 1440p scaling while remaining capped to the current display with a 40-pixel safety margin.
