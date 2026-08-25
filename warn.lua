@@ -6224,10 +6224,6 @@ function render_config_window()
     -- Warn has its own close control and custom header. Passing a mutable open-state
     -- pointer can make some Ashita ImGui builds restore their native title bar.
     if (imgui.Begin('##warn_dashboard', true, flags)) then
-        if (warn.settings.ui.always_on_top and type(imgui.SetWindowFocus) == 'function') then
-            imgui.SetWindowFocus();
-        end
-        local window_x, window_y = imgui.GetWindowPos();
         local window_x, window_y = imgui.GetWindowPos();
         local window_width, window_height = imgui.GetWindowSize();
         local draw = imgui.GetWindowDrawList();
