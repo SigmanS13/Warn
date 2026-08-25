@@ -120,9 +120,10 @@ it normally to reposition it. It can be resized, reset, or hidden under
 **Options → Appearance**.
 
 The interface can scale automatically from display height, or use explicit **1440p**,
-**1080p**, and custom scale presets. Controller navigation is available while Warn is open:
-shoulder buttons switch **Encounters / Options**, the D-pad navigates the current area, and
-the layout-specific back button closes the dashboard. These controls are only consumed while
+**1080p**, and custom scale presets. A configurable controller chord can open or close Warn;
+**L3 + R3** is the fresh-install default and both buttons must be pressed within 350 ms.
+While Warn is open, shoulder buttons switch **Encounters / Options**, the D-pad navigates the
+current area, and B/Circle closes the dashboard. Navigation controls are consumed only while
 the dashboard is open.
 
 Live messages use ornate stepped indigo frames with twin brass rails, engraved diamonds, a
@@ -140,9 +141,11 @@ switching between 1080p, 1440p, or custom interface scaling. Dragging the previe
 returns the card to Custom placement. Critical cards use the same selected placement while keeping
 their screen-edge effect.
 
-The dashboard starts at a large 1320×1080 baseline on a fresh installation, capped to the current
-display, and preserves later manual resizing. **Keep Warn Dashboard Above Other Addons** is enabled
-by default; disable it under Appearance when another addon's controls need to appear over Warn.
+The dashboard starts at a large 1480×1160 baseline on a fresh installation, capped to the current
+display, and preserves later manual resizing. By default, Warn temporarily hides XIUI's
+hotbar/crossbar module through Ashita's runtime addon interface while the dashboard is open,
+then restores XIUI's original runtime function and prior visibility when Warn closes. XIUI's other
+HUD modules are left untouched, and the behavior can be disabled under **Options → Appearance**.
 
 ## Notification burst protection
 

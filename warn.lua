@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '3.1.0';
+addon.version   = '3.1.1';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -100,12 +100,14 @@ local default_settings = T{
         scale_preset         = 'auto',  -- auto / 1440p / 1080p / custom
         custom_scale         = 1.0,
         always_on_top        = true,
+        hide_xiui_hotbars    = true,
         launcher_enabled     = true,
         launcher_position_x  = -1,
         launcher_position_y  = -1,
         launcher_size        = 58,
         controller_enabled   = true,
         controller_layout    = 'xinput', -- xinput / playstation / switch
+        controller_toggle_chord = 'sticks', -- disabled / menu / sticks / shoulders
         show_indexed_only    = false,
         encounter_collapsed  = T{},
         encounter_hud_x      = 24,
@@ -274,6 +276,10 @@ warn = T{
         theme = nil,
         launcher_texture = nil,
         role_textures = T{},
+        xiui_hotbars_suppressed = false,
+        controller_buttons_down = T{},
+        controller_button_pressed_at = T{},
+        controller_toggle_latched = false,
         launcher_position_initialized = false,
         last_launcher_x = nil,
         last_launcher_y = nil,
@@ -655,12 +661,18 @@ local function ensure_ui_settings()
     if (cfg.scale_preset == nil) then cfg.scale_preset = 'auto'; end
     if (cfg.custom_scale == nil) then cfg.custom_scale = 1.0; end
     if (cfg.always_on_top == nil) then cfg.always_on_top = true; end
+    if (cfg.hide_xiui_hotbars == nil) then cfg.hide_xiui_hotbars = true; end
     if (cfg.launcher_enabled == nil) then cfg.launcher_enabled = true; end
     if (cfg.launcher_position_x == nil) then cfg.launcher_position_x = -1; end
     if (cfg.launcher_position_y == nil) then cfg.launcher_position_y = -1; end
     if (cfg.launcher_size == nil) then cfg.launcher_size = 58; end
     if (cfg.controller_enabled == nil) then cfg.controller_enabled = true; end
     if (cfg.controller_layout == nil) then cfg.controller_layout = 'xinput'; end
+    if (cfg.controller_toggle_chord == nil) then cfg.controller_toggle_chord = 'sticks'; end
+    if (cfg.controller_toggle_chord ~= 'disabled' and cfg.controller_toggle_chord ~= 'menu'
+            and cfg.controller_toggle_chord ~= 'sticks' and cfg.controller_toggle_chord ~= 'shoulders') then
+        cfg.controller_toggle_chord = 'sticks';
+    end
     if (cfg.show_indexed_only == nil) then cfg.show_indexed_only = false; end
     if (cfg.encounter_collapsed == nil) then cfg.encounter_collapsed = T{}; end
     if (cfg.encounter_hud_x == nil) then cfg.encounter_hud_x = 24; end
@@ -3818,10 +3830,47 @@ local function play_first_gui_open_sound_once()
     if (shouldPlay) then play_sound_file(filename); end
 end
 
+function set_xiui_hotbars_suppressed(suppressed)
+    local shouldSuppress = suppressed == true
+        and warn.settings ~= nil
+        and warn.settings.ui ~= nil
+        and warn.settings.ui.hide_xiui_hotbars == true;
+    if (shouldSuppress) then
+        local installPath = AshitaCore:GetInstallPath();
+        local xiuiPath = tostring(installPath or '') .. '\\addons\\XIUI\\XIUI.lua';
+        if (type(ashita.fs.exists) ~= 'function' or not ashita.fs.exists(xiuiPath)) then return; end
+    end
+    if (shouldSuppress == warn.ui.xiui_hotbars_suppressed) then return; end
+
+    local command;
+    if (shouldSuppress) then
+        command = "/addon exec xiui local o,m=pcall(require,'modules.hotbar.init');"
+            .. "if o and type(m.SetHidden)=='function' then "
+            .. "if _WARN_DASHBOARD_HOTBAR_STATE==nil then local s={set_hidden=m.SetHidden,visible=m.visible~=false};"
+            .. "_WARN_DASHBOARD_HOTBAR_STATE=s;m.SetHidden=function(h)return s.set_hidden(h or _WARN_DASHBOARD_HOTBAR_STATE~=nil);end;end;"
+            .. "m.SetHidden(true);end";
+    else
+        command = "/addon exec xiui local s=_WARN_DASHBOARD_HOTBAR_STATE;"
+            .. "local o,m=pcall(require,'modules.hotbar.init');"
+            .. "if s~=nil and o then m.SetHidden=s.set_hidden;_WARN_DASHBOARD_HOTBAR_STATE=nil;"
+            .. "s.set_hidden(not s.visible);end";
+    end
+
+    local queued = pcall(function ()
+        AshitaCore:GetChatManager():QueueCommand(-1, command);
+    end);
+    if (queued) then warn.ui.xiui_hotbars_suppressed = shouldSuppress; end
+end
+
+function sync_xiui_hotbars_with_dashboard()
+    set_xiui_hotbars_suppressed(warn.isGuiOpen[1] == true);
+end
+
 local function set_gui_open(open)
     local shouldOpen = (open == true);
     local isOpening = shouldOpen and warn.isGuiOpen[1] ~= true;
     warn.isGuiOpen[1] = shouldOpen;
+    sync_xiui_hotbars_with_dashboard();
     if (isOpening) then
         refresh_sound_files(false);
         play_first_gui_open_sound_once();
@@ -4485,16 +4534,23 @@ function render_appearance_tab()
         end
     end
     imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 }, string.format('Resolved scale: %.2fx', get_ui_scale()));
-        if (imgui.Checkbox('Keep Warn Dashboard Above Other Addons', { ui.always_on_top })) then
+    if (imgui.Checkbox('Keep Warn Dashboard Above Standard Addon Windows', { ui.always_on_top })) then
         ui.always_on_top = not ui.always_on_top;
         save_settings();
     end
     imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 },
-        'Enabled by default. Disable this when you need to interact with another addon over Warn.');
+        'Foreground HUD layers are managed separately because ImGui focus cannot move a window above them.');
     if (warn.ui.focus_api_available == false) then
         imgui.TextColored({ 0.85, 0.35, 0.35, 1.0 },
             'This Ashita build does not expose the ImGui focus API Warn needs for this option; it will have no effect here.');
     end
+    if (imgui.Checkbox('Hide XIUI Hotbars While Warn Is Open', { ui.hide_xiui_hotbars })) then
+        ui.hide_xiui_hotbars = not ui.hide_xiui_hotbars;
+        save_settings();
+        sync_xiui_hotbars_with_dashboard();
+    end
+    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 },
+        'Temporarily hides only XIUI\'s hotbar/crossbar module and restores its prior state when Warn closes.');
 
     local themes = uiTheme.list(addon.path);
     local theme_index = 0;
@@ -4637,6 +4693,9 @@ function render_appearance_tab()
     imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Controller Navigation');
     if (imgui.Checkbox('Enable Controller Navigation', { ui.controller_enabled })) then
         ui.controller_enabled = not ui.controller_enabled;
+        warn.ui.controller_buttons_down = T{};
+        warn.ui.controller_button_pressed_at = T{};
+        warn.ui.controller_toggle_latched = false;
         save_settings();
     end
     local controller_values = { 'xinput', 'playstation', 'switch' };
@@ -4646,10 +4705,27 @@ function render_appearance_tab()
     local controller_selected = { controller_index };
     if (imgui.Combo('Controller Layout', controller_selected, controller_labels)) then
         ui.controller_layout = controller_values[controller_selected[1] + 1] or 'xinput';
+        warn.ui.controller_buttons_down = T{};
+        warn.ui.controller_button_pressed_at = T{};
+        warn.ui.controller_toggle_latched = false;
+        save_settings();
+    end
+    local chord_values = { 'disabled', 'menu', 'sticks', 'shoulders' };
+    local chord_labels = 'Disabled\000Menu Buttons (Back/Start)\000Stick Clicks (L3/R3)\000Shoulders (L1/R1)\000\000';
+    local chord_index = 0;
+    for index, value in ipairs(chord_values) do
+        if (ui.controller_toggle_chord == value) then chord_index = index - 1; end
+    end
+    local chord_selected = { chord_index };
+    if (imgui.Combo('Open / Close Chord', chord_selected, chord_labels)) then
+        ui.controller_toggle_chord = chord_values[chord_selected[1] + 1] or 'sticks';
+        warn.ui.controller_buttons_down = T{};
+        warn.ui.controller_button_pressed_at = T{};
+        warn.ui.controller_toggle_latched = false;
         save_settings();
     end
     imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 },
-        'Shoulders switch Encounters/Options. D-pad changes the active browser or option selection. Back closes Warn.');
+        'The configured chord toggles Warn. Shoulders switch tabs, D-pad navigates, and B/Circle closes it.');
 
     imgui.Separator();
     if (imgui.Button('Test Important')) then
@@ -6208,8 +6284,8 @@ function render_config_window()
     local scale = get_ui_scale();
     if (not warn.guiSizeInitialized) then
         local display = imgui.GetIO().DisplaySize;
-        local starterWidth = math.min(1320 * scale, math.max(720 * scale, tonumber(display.x) - 40));
-        local starterHeight = math.min(1080 * scale, math.max(600 * scale, tonumber(display.y) - 40));
+        local starterWidth = math.min(1480 * scale, math.max(720 * scale, tonumber(display.x) - 32));
+        local starterHeight = math.min(1160 * scale, math.max(600 * scale, tonumber(display.y) - 32));
         imgui.SetNextWindowSize({ starterWidth, starterHeight }, ImGuiCond_FirstUseEver);
         warn.guiSizeInitialized = true;
     end
@@ -6267,7 +6343,7 @@ function render_config_window()
         imgui.EndGroup();
         imgui.SameLine();
         imgui.SetCursorPosX(math.max(imgui.GetCursorPosX(), window_width - 45 * scale));
-        if (imgui.Button('X##warn_close', { 28 * scale, 28 * scale })) then warn.isGuiOpen[1] = false; end
+        if (imgui.Button('X##warn_close', { 28 * scale, 28 * scale })) then set_gui_open(false); end
 
         imgui.Separator();
         local tab_width = 172 * scale;
@@ -6344,6 +6420,65 @@ function guiOps.controller_move_rule(delta)
     warn.selectedRuleId = rules[warn.ui.encounter_rule_index].id;
 end
 
+function guiOps.get_controller_toggle_buttons(source)
+    local chord = warn.settings.ui.controller_toggle_chord;
+    if (chord == 'disabled') then return nil; end
+    local mappings = {
+        xinput = {
+            menu = { 15, 14 },       -- Back + Start
+            sticks = { 10, 13 },     -- L3 + R3
+            shoulders = { 8, 11 },   -- LB + RB
+        },
+        playstation = {
+            menu = { 56, 57 },       -- Create + Options
+            sticks = { 58, 59 },     -- L3 + R3
+            shoulders = { 52, 53 },  -- L1 + R1
+        },
+        switch = {
+            menu = { 56, 57 },       -- Minus + Plus
+            sticks = { 58, 59 },     -- L3 + R3
+            shoulders = { 52, 53 },  -- L + R
+        },
+    };
+    local layout = warn.settings.ui.controller_layout;
+    if ((source == 'xinput') ~= (layout == 'xinput')) then return nil; end
+    return mappings[layout] and mappings[layout][chord] or nil;
+end
+
+function guiOps.handle_controller_toggle_input(source, button, state)
+    if (warn.settings == nil) then return false; end
+    ensure_ui_settings();
+    if (warn.settings.ui.controller_enabled ~= true) then return false; end
+    local buttons = guiOps.get_controller_toggle_buttons(source);
+    if (buttons == nil or (button ~= buttons[1] and button ~= buttons[2])) then return false; end
+
+    local pressed = source == 'xinput' and state == 1 or source == 'dinput' and state == 128;
+    local key = source .. ':' .. tostring(button);
+    if (pressed) then
+        warn.ui.controller_buttons_down[key] = true;
+        warn.ui.controller_button_pressed_at[key] = os.clock();
+    else
+        warn.ui.controller_buttons_down[key] = nil;
+        warn.ui.controller_button_pressed_at[key] = nil;
+    end
+    local firstKey = source .. ':' .. tostring(buttons[1]);
+    local secondKey = source .. ':' .. tostring(buttons[2]);
+    local firstDown = warn.ui.controller_buttons_down[firstKey] == true;
+    local secondDown = warn.ui.controller_buttons_down[secondKey] == true;
+
+    if (not firstDown and not secondDown) then warn.ui.controller_toggle_latched = false; end
+    local firstPressedAt = tonumber(warn.ui.controller_button_pressed_at[firstKey]);
+    local secondPressedAt = tonumber(warn.ui.controller_button_pressed_at[secondKey]);
+    local withinChordWindow = firstPressedAt ~= nil and secondPressedAt ~= nil
+        and math.abs(firstPressedAt - secondPressedAt) <= 0.35;
+    if (pressed and firstDown and secondDown and withinChordWindow and not warn.ui.controller_toggle_latched) then
+        warn.ui.controller_toggle_latched = true;
+        set_gui_open(not warn.isGuiOpen[1]);
+        return true;
+    end
+    return false;
+end
+
 function guiOps.handle_controller_action(action)
     if (warn.settings == nil or warn.isGuiOpen[1] ~= true) then return false; end
     ensure_ui_settings();
@@ -6358,7 +6493,7 @@ function guiOps.handle_controller_action(action)
         if (warn.mainTab[1] == 1) then guiOps.controller_move_rule(action == 'left' and -1 or 1);
         else return false; end
     elseif (action == 'close') then
-        warn.isGuiOpen[1] = false;
+        set_gui_open(false);
     else
         return false;
     end
@@ -6447,6 +6582,7 @@ ashita.events.register('load', 'load_cb', function ()
 end);
 
 ashita.events.register('unload', 'unload_cb', function ()
+    set_xiui_hotbars_suppressed(false);
     if (warn.timerLearning.dirty) then save_learning_data(); end
     if (warn.font ~= nil) then
         warn.font:destroy();
@@ -6460,21 +6596,33 @@ ashita.events.register('unload', 'unload_cb', function ()
 end);
 
 ashita.events.register('xinput_button', 'warn_xinput_button_cb', function (e)
-    if (e == nil or e.injected == true or tonumber(e.state) ~= 1) then return; end
+    if (e == nil or e.injected == true) then return; end
+    local button = tonumber(e.button);
+    local state = tonumber(e.state);
+    if (guiOps.handle_controller_toggle_input('xinput', button, state)) then
+        e.blocked = true;
+        return;
+    end
+    if (state ~= 1) then return; end
     local actions = {
-        [0] = 'up', [1] = 'down', [2] = 'left', [3] = 'right',
-        [5] = 'close', [8] = 'tab_left', [9] = 'tab_right', [13] = 'close',
+        [6] = 'up', [7] = 'down', [5] = 'left', [4] = 'right',
+        [0] = 'close', [8] = 'tab_left', [11] = 'tab_right',
     };
-    local action = actions[tonumber(e.button)];
+    local action = actions[button];
     if (action ~= nil and guiOps.handle_controller_action(action)) then e.blocked = true; end
 end);
 
 ashita.events.register('dinput_button', 'warn_dinput_button_cb', function (e)
-    if (e == nil or e.injected == true or warn.settings == nil or warn.isGuiOpen[1] ~= true) then return; end
+    if (e == nil or e.injected == true or warn.settings == nil) then return; end
     ensure_ui_settings();
     if (warn.settings.ui.controller_enabled ~= true or warn.settings.ui.controller_layout == 'xinput') then return; end
     local button = tonumber(e.button);
     local state = tonumber(e.state);
+    if (guiOps.handle_controller_toggle_input('dinput', button, state)) then
+        e.blocked = true;
+        return;
+    end
+    if (warn.isGuiOpen[1] ~= true) then return; end
     local action = nil;
     if (button == 32) then
         local directions = { [0] = 'up', [9000] = 'right', [18000] = 'down', [27000] = 'left' };
@@ -6483,7 +6631,7 @@ ashita.events.register('dinput_button', 'warn_dinput_button_cb', function (e)
         if (button == 52) then action = 'tab_left';
         elseif (button == 53) then action = 'tab_right';
         elseif (warn.settings.ui.controller_layout == 'playstation' and button == 50) then action = 'close';
-        elseif (warn.settings.ui.controller_layout == 'switch' and button == 49) then action = 'close';
+        elseif (warn.settings.ui.controller_layout == 'switch' and button == 48) then action = 'close';
         end
     end
     if (action ~= nil and guiOps.handle_controller_action(action)) then e.blocked = true; end

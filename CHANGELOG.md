@@ -1,7 +1,16 @@
 # Changelog
 
+## 3.1.1
+- Fixed XIUI hotbars briefly hiding and then reappearing over Warn by targeting XIUI's exact cached `modules.hotbar.init` instance for both suppression and restoration.
+- Changed the fresh-install controller toggle chord to L3 + R3 across supported controller layouts; existing saved chord selections remain unchanged.
+- Added a 350 ms chord window so stick clicks pressed too far apart do not accidentally open or close the dashboard.
+
 ## 3.1.0
-- Fixed the always on top behavior.
+- Replaced the ineffective XIUI z-order workaround with dashboard lifecycle integration: opening Warn temporarily hides only XIUI's hotbar/crossbar module through Ashita's runtime addon interface, and every close path restores XIUI's original runtime function and prior visibility.
+- Added a default-enabled **Hide XIUI Hotbars While Warn Is Open** option without modifying XIUI or requiring a custom XIUI installation.
+- Added configurable controller chords for opening and closing Warn across XInput, PlayStation DirectInput and Switch Pro DirectInput layouts.
+- Corrected XInput navigation to Ashita's current button identifiers and made B/Circle the consistent controller close action.
+- Increased the fresh-install dashboard baseline from 1320×1080 to 1480×1160 logical pixels with a 32-pixel display safety margin.
 
 ## 3.0.9
 - Added a default-enabled **Keep Warn Dashboard Above Other Addons** option under Appearance. Warn requests foreground focus while its dashboard is open; the option can be disabled when another addon's controls need to appear over it.
