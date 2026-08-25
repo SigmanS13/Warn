@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.1.4
+- Deferred controller-triggered dashboard transitions to the render path so controller dispatch cannot re-enter XIUI hotbar synchronization.
+
 ## 3.1.3
 - Fixed all dashboard dropdowns and other popup controls losing focus by focusing Warn only once when it opens instead of on every rendered frame.
 - Fixed XIUI integration commands being truncated to the single token `local`, which caused a Lua `'<name>' expected near '<eof>'` error when opening or closing Warn.

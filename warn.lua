@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '3.1.3';
+addon.version   = '3.1.4';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -300,6 +300,7 @@ warn = T{
         controller_buttons_down = T{},
         controller_button_pressed_at = T{},
         controller_toggle_latched = false,
+        controller_pending_gui_state = nil,
         launcher_position_initialized = false,
         last_launcher_x = nil,
         last_launcher_y = nil,
@@ -6501,7 +6502,7 @@ function guiOps.handle_controller_toggle_input(source, button, state)
         and math.abs(firstPressedAt - secondPressedAt) <= 0.35;
     if (pressed and firstDown and secondDown and withinChordWindow and not warn.ui.controller_toggle_latched) then
         warn.ui.controller_toggle_latched = true;
-        set_gui_open(not warn.isGuiOpen[1]);
+        warn.ui.controller_pending_gui_state = not warn.isGuiOpen[1];
     end
     -- Consume either member while a toggle chord is in progress. This keeps a
     -- shoulders chord from changing tabs before the second button is pressed.
@@ -6522,7 +6523,7 @@ function guiOps.handle_controller_action(action)
         if (warn.mainTab[1] == 1) then guiOps.controller_move_rule(action == 'left' and -1 or 1);
         else return false; end
     elseif (action == 'close') then
-        set_gui_open(false);
+        warn.ui.controller_pending_gui_state = false;
     else
         return false;
     end
@@ -7120,6 +7121,12 @@ ashita.events.register('packet_in', 'packet_in_cb', function (e)
 end);
 
 ashita.events.register('d3d_present', 'present_cb', function ()
+    local pendingControllerGuiState = warn.ui.controller_pending_gui_state;
+    if (pendingControllerGuiState ~= nil) then
+        warn.ui.controller_pending_gui_state = nil;
+        set_gui_open(pendingControllerGuiState);
+    end
+
     update_debuff_mob_cache(false);
     update_state_rules();
     update_divergence_circle_state();
