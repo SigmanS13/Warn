@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '3.1.4';
+addon.version   = '3.1.5';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -68,10 +68,6 @@ local XINPUT_BUTTON = {
     DPAD_DOWN  = 1,
     DPAD_LEFT  = 2,
     DPAD_RIGHT = 3,
-    START      = 4,
-    BACK       = 5,
-    L3         = 6,
-    R3         = 7,
     LB         = 8,
     RB         = 9,
     A          = 12,
@@ -126,7 +122,6 @@ local default_settings = T{
         launcher_size        = 58,
         controller_enabled   = true,
         controller_layout    = 'xinput', -- xinput / playstation / switch
-        controller_toggle_chord = 'sticks', -- disabled / menu / sticks / shoulders
         show_indexed_only    = false,
         encounter_collapsed  = T{},
         encounter_hud_x      = 24,
@@ -297,9 +292,6 @@ warn = T{
         role_textures = T{},
         xiui_hotbars_suppressed = false,
         request_focus = false,
-        controller_buttons_down = T{},
-        controller_button_pressed_at = T{},
-        controller_toggle_latched = false,
         controller_pending_gui_state = nil,
         launcher_position_initialized = false,
         last_launcher_x = nil,
@@ -689,11 +681,6 @@ local function ensure_ui_settings()
     if (cfg.launcher_size == nil) then cfg.launcher_size = 58; end
     if (cfg.controller_enabled == nil) then cfg.controller_enabled = true; end
     if (cfg.controller_layout == nil) then cfg.controller_layout = 'xinput'; end
-    if (cfg.controller_toggle_chord == nil) then cfg.controller_toggle_chord = 'sticks'; end
-    if (cfg.controller_toggle_chord ~= 'disabled' and cfg.controller_toggle_chord ~= 'menu'
-            and cfg.controller_toggle_chord ~= 'sticks' and cfg.controller_toggle_chord ~= 'shoulders') then
-        cfg.controller_toggle_chord = 'sticks';
-    end
     if (cfg.show_indexed_only == nil) then cfg.show_indexed_only = false; end
     if (cfg.encounter_collapsed == nil) then cfg.encounter_collapsed = T{}; end
     if (cfg.encounter_hud_x == nil) then cfg.encounter_hud_x = 24; end
@@ -4719,9 +4706,6 @@ function render_appearance_tab()
     imgui.TextColored({ 1.0, 0.88, 0.35, 1.0 }, 'Controller Navigation');
     if (imgui.Checkbox('Enable Controller Navigation', { ui.controller_enabled })) then
         ui.controller_enabled = not ui.controller_enabled;
-        warn.ui.controller_buttons_down = T{};
-        warn.ui.controller_button_pressed_at = T{};
-        warn.ui.controller_toggle_latched = false;
         save_settings();
     end
     local controller_values = { 'xinput', 'playstation', 'switch' };
@@ -4731,27 +4715,8 @@ function render_appearance_tab()
     local controller_selected = { controller_index };
     if (imgui.Combo('Controller Layout', controller_selected, controller_labels)) then
         ui.controller_layout = controller_values[controller_selected[1] + 1] or 'xinput';
-        warn.ui.controller_buttons_down = T{};
-        warn.ui.controller_button_pressed_at = T{};
-        warn.ui.controller_toggle_latched = false;
         save_settings();
     end
-    local chord_values = { 'disabled', 'menu', 'sticks', 'shoulders' };
-    local chord_labels = 'Disabled\000Menu Buttons (Back/Start)\000Stick Clicks (L3/R3)\000Shoulders (L1/R1)\000\000';
-    local chord_index = 0;
-    for index, value in ipairs(chord_values) do
-        if (ui.controller_toggle_chord == value) then chord_index = index - 1; end
-    end
-    local chord_selected = { chord_index };
-    if (imgui.Combo('Open / Close Chord', chord_selected, chord_labels)) then
-        ui.controller_toggle_chord = chord_values[chord_selected[1] + 1] or 'sticks';
-        warn.ui.controller_buttons_down = T{};
-        warn.ui.controller_button_pressed_at = T{};
-        warn.ui.controller_toggle_latched = false;
-        save_settings();
-    end
-    imgui.TextColored({ 0.58, 0.65, 0.74, 1.0 },
-        'The configured chord toggles Warn. Shoulders switch tabs, D-pad navigates, and B/Circle closes it.');
 
     imgui.Separator();
     if (imgui.Button('Test Important')) then
@@ -6449,66 +6414,6 @@ function guiOps.controller_move_rule(delta)
     warn.selectedRuleId = rules[warn.ui.encounter_rule_index].id;
 end
 
-function guiOps.get_controller_toggle_buttons(source)
-    local chord = warn.settings.ui.controller_toggle_chord;
-    if (chord == 'disabled') then return nil; end
-    local mappings = {
-        xinput = {
-            menu = { XINPUT_BUTTON.BACK, XINPUT_BUTTON.START },
-            sticks = { XINPUT_BUTTON.L3, XINPUT_BUTTON.R3 },
-            shoulders = { XINPUT_BUTTON.LB, XINPUT_BUTTON.RB },
-        },
-        playstation = {
-            menu = { 56, 57 },       -- Create + Options
-            sticks = { 58, 59 },     -- L3 + R3
-            shoulders = { 52, 53 },  -- L1 + R1
-        },
-        switch = {
-            menu = { 56, 57 },       -- Minus + Plus
-            sticks = { 58, 59 },     -- L3 + R3
-            shoulders = { 52, 53 },  -- L + R
-        },
-    };
-    local layout = warn.settings.ui.controller_layout;
-    if ((source == 'xinput') ~= (layout == 'xinput')) then return nil; end
-    return mappings[layout] and mappings[layout][chord] or nil;
-end
-
-function guiOps.handle_controller_toggle_input(source, button, state)
-    if (warn.settings == nil) then return false; end
-    ensure_ui_settings();
-    if (warn.settings.ui.controller_enabled ~= true) then return false; end
-    local buttons = guiOps.get_controller_toggle_buttons(source);
-    if (buttons == nil or (button ~= buttons[1] and button ~= buttons[2])) then return false; end
-
-    local pressed = source == 'xinput' and state == 1 or source == 'dinput' and state == 128;
-    local key = source .. ':' .. tostring(button);
-    if (pressed) then
-        warn.ui.controller_buttons_down[key] = true;
-        warn.ui.controller_button_pressed_at[key] = os.clock();
-    else
-        warn.ui.controller_buttons_down[key] = nil;
-        warn.ui.controller_button_pressed_at[key] = nil;
-    end
-    local firstKey = source .. ':' .. tostring(buttons[1]);
-    local secondKey = source .. ':' .. tostring(buttons[2]);
-    local firstDown = warn.ui.controller_buttons_down[firstKey] == true;
-    local secondDown = warn.ui.controller_buttons_down[secondKey] == true;
-
-    if (not firstDown and not secondDown) then warn.ui.controller_toggle_latched = false; end
-    local firstPressedAt = tonumber(warn.ui.controller_button_pressed_at[firstKey]);
-    local secondPressedAt = tonumber(warn.ui.controller_button_pressed_at[secondKey]);
-    local withinChordWindow = firstPressedAt ~= nil and secondPressedAt ~= nil
-        and math.abs(firstPressedAt - secondPressedAt) <= 0.35;
-    if (pressed and firstDown and secondDown and withinChordWindow and not warn.ui.controller_toggle_latched) then
-        warn.ui.controller_toggle_latched = true;
-        warn.ui.controller_pending_gui_state = not warn.isGuiOpen[1];
-    end
-    -- Consume either member while a toggle chord is in progress. This keeps a
-    -- shoulders chord from changing tabs before the second button is pressed.
-    return true;
-end
-
 function guiOps.handle_controller_action(action)
     if (warn.settings == nil or warn.isGuiOpen[1] ~= true) then return false; end
     ensure_ui_settings();
@@ -6629,10 +6534,6 @@ ashita.events.register('xinput_button', 'warn_xinput_button_cb', function (e)
     if (e == nil or e.injected == true) then return; end
     local button = tonumber(e.button);
     local state = tonumber(e.state);
-    if (guiOps.handle_controller_toggle_input('xinput', button, state)) then
-        e.blocked = true;
-        return;
-    end
     if (state ~= 1) then return; end
     local actions = {
         [XINPUT_BUTTON.DPAD_UP] = 'up',
@@ -6653,10 +6554,6 @@ ashita.events.register('dinput_button', 'warn_dinput_button_cb', function (e)
     if (warn.settings.ui.controller_enabled ~= true or warn.settings.ui.controller_layout == 'xinput') then return; end
     local button = tonumber(e.button);
     local state = tonumber(e.state);
-    if (guiOps.handle_controller_toggle_input('dinput', button, state)) then
-        e.blocked = true;
-        return;
-    end
     if (warn.isGuiOpen[1] ~= true) then return; end
     local action = nil;
     if (button == 32) then

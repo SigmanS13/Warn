@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.1.5
+- Removed controller chords for opening and closing Warn so L3/R3 and other formerly configurable chord buttons are no longer consumed while the dashboard is closed.
+- Removed the obsolete chord setting and runtime state while preserving `/warn`, `/warn rule <id>`, controller D-pad and shoulder navigation, and B/Circle closing while the dashboard is open.
+
 ## 3.1.4
 - Deferred controller-triggered dashboard transitions to the render path so controller dispatch cannot re-enter XIUI hotbar synchronization.
 
