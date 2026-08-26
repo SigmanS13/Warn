@@ -192,8 +192,9 @@ local function key_count(keys)
     return count, only;
 end
 
-function detector.observe_action(index, state, actor, ability, event_type, zone_id, now)
+function detector.observe_action(index, state, actor, ability, event_type, zone_id, now, actor_is_hostile)
     if (index == nil or state == nil or lower(actor) == '') then return { kind='none' }; end
+    if (actor_is_hostile ~= true) then return { kind='ignored_non_hostile' }; end
     now = tonumber(now) or 0;
     local action = lower(actor) .. '|' .. lower(ability) .. '|' .. lower(event_type);
     local wildcard = lower(actor) .. '|' .. lower(ability) .. '|*';

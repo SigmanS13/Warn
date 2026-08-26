@@ -1,6 +1,6 @@
 addon.name      = 'warn';
 addon.author    = 'Sigman';
-addon.version   = '3.1.5';
+addon.version   = '3.1.6';
 addon.desc      = 'Context-aware FFXI encounter helper with global debuff and crowd-control tracking.';
 addon.link      = '';
 
@@ -353,6 +353,7 @@ warn = T{
     mechanics = nil,
     actionPacket = nil,
     statusPacket = nil,
+    actorGuard = require('data.actor_guard'),
     reactive = T{
         recent = T{},
         packet_actions = 0,
@@ -1484,7 +1485,7 @@ local function raw_message_matches_rule_actor(message, rule)
     return false;
 end
 
-local function find_context_ability_rule(eventType, abilityName, rawMessage)
+local function find_context_ability_rule(eventType, abilityName, rawMessage, zoneId)
     if (not warn.settings.context.enabled or abilityName == nil or abilityName == '') then
         return nil;
     end
@@ -1493,7 +1494,7 @@ local function find_context_ability_rule(eventType, abilityName, rawMessage)
     local actorMatches = {};
     local genericMatches = {};
     for _, rule in ipairs(warn.rules.ability_rules or {}) do
-        if (is_rule_enabled(rule)) then
+        if (is_rule_enabled(rule) and warn.actorGuard.rule_matches_zone(rule, zoneId)) then
         local eventMatches = (rule.event == nil or rule.event == eventType);
         local abilityMatches = (rule.ability ~= nil and rule.ability:lower() == lname);
         if (not abilityMatches and rule.aliases ~= nil) then
@@ -1809,11 +1810,7 @@ local function get_current_zone_id()
 end
 
 local function rule_matches_current_zone(rule)
-    if (type(rule) ~= 'table' or type(rule.zone_ids) ~= 'table' or #rule.zone_ids == 0) then return true; end
-    local zone = get_current_zone_id();
-    if (zone == nil) then return false; end
-    for _, id in ipairs(rule.zone_ids) do if (tonumber(id) == zone) then return true; end end
-    return false;
+    return warn.actorGuard.rule_matches_zone(rule, get_current_zone_id());
 end
 
 local function get_friendly_name_lookup()
@@ -1835,6 +1832,33 @@ local function get_friendly_name_lookup()
     end
 
     return names;
+end
+
+function warn.classify_action_actor(actorName)
+    local name = trim(tostring(actorName or ''));
+    if (name == '') then return 'unknown'; end
+    local lowerName = name:lower();
+
+    -- The party API includes the player, party/alliance members and active Trusts.
+    -- Prefer this conservative answer for text lines, which do not carry an entity ID.
+    if (get_friendly_name_lookup()[lowerName]) then return 'non_hostile'; end
+
+    -- The hostile cache is refreshed by the normal lightweight entity scan.  It avoids
+    -- another full scan for nearly every combat-log line in an active encounter.
+    if (warn.debuffs.mob_names[lowerName] ~= nil) then return 'hostile'; end
+
+    local entityManager = AshitaCore:GetMemoryManager():GetEntity();
+    if (entityManager == nil) then return 'unknown'; end
+    local sawNonHostile = false;
+    local mapSize = entityManager:GetEntityMapSize();
+    for index = 0, mapSize - 1 do
+        local entity = entityManager:GetRawEntity(index);
+        if (entity ~= nil and entity.Name ~= nil and tostring(entity.Name):lower() == lowerName) then
+            if (warn.actorGuard.is_hostile_entity(entity)) then return 'hostile'; end
+            sawNonHostile = true;
+        end
+    end
+    return sawNonHostile and 'non_hostile' or 'unknown';
 end
 
 local function clean_log_subject(text)
@@ -2873,6 +2897,16 @@ local function process_detected_action(actorName, abilityName, eventType, rawMes
     abilityName = clean_action_name(abilityName);
     if (abilityName == '') then return false; end
 
+    context = context or {};
+    context.actor_disposition = context.actor_disposition or warn.classify_action_actor(actorName);
+    if (not warn.actorGuard.allows_encounter_action(context.actor_disposition)) then
+        if (warn.debug) then
+            print(chat.header(addon.name):append(chat.message('Ignored non-hostile or unresolved action actor: ' ..
+                tostring(actorName) .. ' / ' .. tostring(abilityName))));
+        end
+        return false;
+    end
+
     local key = action_event_key(actorName, abilityName, eventType);
     local now = os.clock();
     if (source == 'text' and warn.reactive.recent[key] ~= nil and (now - warn.reactive.recent[key]) < 1.5) then
@@ -2892,7 +2926,7 @@ local function process_detected_action(actorName, abilityName, eventType, rawMes
         local previousEncounterKey = warn.activeEncounter.state.active_key;
         local transition = warn.activeEncounter.engine.observe_action(
             warn.activeEncounter.index, warn.activeEncounter.state,
-            actorName, abilityName, eventType, get_current_zone_id(), now);
+            actorName, abilityName, eventType, get_current_zone_id(), now, true);
         if (transition.kind == 'started' and previousEncounterKey ~= nil and
             previousEncounterKey ~= warn.activeEncounter.state.active_key) then
             warn.encounter = encounterRuntime.new_state();
@@ -2909,7 +2943,7 @@ local function process_detected_action(actorName, abilityName, eventType, rawMes
     -- Only verified rules and explicit Custom Watches can create a player-facing alert.
     -- Unknown observations remain local Learning evidence.
     local synthetic = rawMessage or (actorName .. ' ' .. eventType .. ' ' .. abilityName);
-    local rule = find_context_ability_rule(eventType, abilityName, synthetic);
+    local rule = find_context_ability_rule(eventType, abilityName, synthetic, get_current_zone_id());
     if (rule == nil and warn.activeEncounter.state.active_key ~= nil) then
         local observation = warn.activeEncounter.engine.record_unknown(
             warn.activeEncounter.state, actorName, abilityName, eventType, os.time());
@@ -2953,7 +2987,7 @@ local function find_entity_name_by_server_id(serverId)
         if (tonumber(id) == tonumber(serverId)) then
             local entity = entityManager:GetRawEntity(index);
             if (entity ~= nil and entity.Name ~= nil and tostring(entity.Name) ~= '') then
-                return tostring(entity.Name);
+                return tostring(entity.Name), warn.actorGuard.classify_entity(entity);
             end
         end
     end
@@ -3069,8 +3103,8 @@ local function process_action_packet(event)
         return;
     end
 
-    local actor = find_entity_name_by_server_id(parsed.actor_id);
-    if (actor ~= nil and actor:lower() == 'bumba' and warn.settings.context.encounter_diagnostics) then
+    local actor, actorDisposition = find_entity_name_by_server_id(parsed.actor_id);
+    if (actorDisposition == 'hostile' and actor ~= nil and actor:lower() == 'bumba' and warn.settings.context.encounter_diagnostics) then
         local signature = string.format('%d:%d:%d:%d:%d', tonumber(parsed.action_type) or -1,
             tonumber(parsed.param) or -1, tonumber(parsed.action_param) or -1,
             tonumber(parsed.animation) or -1, tonumber(parsed.special_effect) or -1);
@@ -3107,6 +3141,7 @@ local function process_action_packet(event)
     -- Completed monster TP moves carry every affected target. They do not create a
     -- duplicate ready alert, but they provide encounter triage and future status evidence.
     if (parsed.action_type == 11) then
+        if (actorDisposition ~= 'hostile') then return; end
         local completedAbility = resolve_packet_action_name(parsed.action_type, parsed.param17);
         local doom = warn.encounter.shinryu ~= nil and warn.encounter.shinryu.doom or nil;
         local awaitingSupernova = doom ~= nil and doom.pending == true and doom.readied_at ~= nil and
@@ -3137,6 +3172,7 @@ local function process_action_packet(event)
             process_detected_action(actor, completedAbility, 'uses', nil, 'packet', {
                 target_name=targetName, target_id=parsed.target_id,
                 target_names=targetNames, targets=resolvedTargets,
+                actor_disposition=actorDisposition,
             });
         end
         return;
@@ -3160,6 +3196,7 @@ local function process_action_packet(event)
     process_detected_action(actor, ability, eventType, nil, 'packet', {
         target_name=targetName, target_id=parsed.target_id,
         target_names=targetNames, targets=resolvedTargets,
+        actor_disposition=actorDisposition,
     });
 end
 
@@ -3538,9 +3575,9 @@ local function update_state_rules()
             local entity = entityManager:GetRawEntity(i);
             if (entity ~= nil and entity.Name ~= nil) then
                 local entityName = tostring(entity.Name);
-                if (wanted[entityName]) then found[entityName] = { index = i, entity = entity }; end
+                local hostile = warn.actorGuard.is_hostile_entity(entity);
+                if (hostile and wanted[entityName]) then found[entityName] = { index = i, entity = entity }; end
                 if (detectorWanted[entityName:lower()]) then
-                    local hostile = entity.SpawnFlags ~= nil and bit.band(entity.SpawnFlags, 0x10) ~= 0;
                     local hpp = entity_health_percent(entity, i);
                     if (hostile and (hpp == nil or hpp > 0)) then encounterActors[entityName] = true; end
                 end

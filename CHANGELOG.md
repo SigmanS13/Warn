@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.1.6
+- Added a shared hostile-actor boundary for packet and chat-log action recognition so players, Trusts, pets, friendly NPCs, and unresolved actors cannot activate encounters, produce contextual alerts, feed encounter learning, or start verified timers/modes.
+- Applied the same hostile-only rule to entity-driven state mechanics and completed-action side effects, closing non-action paths that could otherwise arm encounter warnings from a friendly namesake.
+- Enforced `zone_ids` during contextual ability matching and scoped all Sinister Reign mechanics to Rala Waterways [U], preventing August/Daybreak and other Sinister rules from appearing in Dynamis Xarcabard, Reisenjima, or other zones.
+- Added regression coverage for Trust August, wrong-zone Sinister actions, packet actor disposition, state-rule entity filtering, and fail-closed unresolved actors.
+
 ## 3.1.5
 - Removed controller chords for opening and closing Warn so L3/R3 and other formerly configurable chord buttons are no longer consumed while the dashboard is closed.
 - Removed the obsolete chord setting and runtime state while preserving `/warn`, `/warn rule <id>`, controller D-pad and shoulder navigation, and B/Circle closing while the dashboard is open.
